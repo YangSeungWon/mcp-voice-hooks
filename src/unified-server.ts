@@ -15,6 +15,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { SessionManager, SessionInfo } from './session-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,7 +90,14 @@ class UtteranceQueue {
 const IS_MCP_MANAGED = process.argv.includes('--mcp-managed');
 
 // Global state
+const sessionManager = new SessionManager();
+// Keep the old queue for backward compatibility during transition
 const queue = new UtteranceQueue();
+
+// Set up session change notifications
+sessionManager.setChangeCallback(() => {
+  notifySessionUpdate();
+});
 let lastToolUseTimestamp: Date | null = null;
 let lastSpeakTimestamp: Date | null = null;
 
@@ -114,8 +122,24 @@ app.post('/api/potential-utterances', (req: Request, res: Response) => {
     return;
   }
 
+  // Route voice input to the active session's queue
+  const activeQueue = sessionManager.getActiveUtteranceQueue();
+  const targetQueue = activeQueue || queue; // Fallback to global queue
+  
   const parsedTimestamp = timestamp ? new Date(timestamp) : undefined;
-  const utterance = queue.add(text, parsedTimestamp);
+  const utterance = targetQueue.add(text, parsedTimestamp);
+  
+  // Log which session received the voice input
+  const activeSession = sessionManager.getActiveSession();
+  if (activeSession) {
+    debugLog(`[Voice Input] Routed to session: ${activeSession.id} (${activeSession.projectName || 'unknown project'})`);
+  } else {
+    debugLog(`[Voice Input] Routed to global queue (no active session)`);
+  }
+  
+  // Notify clients about the session update (utterance count changed)
+  notifySessionUpdate();
+  
   res.json({
     success: true,
     utterance: {
@@ -124,6 +148,8 @@ app.post('/api/potential-utterances', (req: Request, res: Response) => {
       timestamp: utterance.timestamp,
       status: utterance.status,
     },
+    sessionId: activeSession?.id || null,
+    sessionName: activeSession?.projectName || null,
   });
 });
 
@@ -502,31 +528,70 @@ function handleHookRequest(attemptedAction: 'tool' | 'speak' | 'wait' | 'stop' |
   return { decision: 'approve' };
 }
 
+// Helper function to register session from request headers
+function registerSessionFromRequest(req: Request): string {
+  const headers: Record<string, string | string[] | undefined> = {};
+  
+  // Copy relevant headers
+  for (const [key, value] of Object.entries(req.headers)) {
+    headers[key.toLowerCase()] = value;
+  }
+  
+  const sessionId = sessionManager.registerSession(headers);
+  debugLog(`[Session] Registered session from request: ${sessionId}`);
+  return sessionId;
+}
+
+// Helper function to get the appropriate utterance queue based on session context
+function getContextualUtteranceQueue(req?: Request): UtteranceQueue {
+  if (req) {
+    const sessionId = registerSessionFromRequest(req);
+    const sessionQueue = sessionManager.getUtteranceQueue(sessionId);
+    if (sessionQueue) {
+      return sessionQueue;
+    }
+  }
+  
+  // Fall back to active session queue
+  const activeQueue = sessionManager.getActiveUtteranceQueue();
+  if (activeQueue) {
+    return activeQueue;
+  }
+  
+  // Final fallback to global queue for backward compatibility
+  return queue;
+}
+
 // Dedicated hook endpoints that return in Claude's expected format
-app.post('/api/hooks/pre-tool', (_req: Request, res: Response) => {
+app.post('/api/hooks/pre-tool', (req: Request, res: Response) => {
+  registerSessionFromRequest(req);
   const result = handleHookRequest('tool');
   res.json(result);
 });
 
-app.post('/api/hooks/stop', async (_req: Request, res: Response) => {
+app.post('/api/hooks/stop', async (req: Request, res: Response) => {
+  registerSessionFromRequest(req);
   const result = await handleHookRequest('stop');
   res.json(result);
 });
 
 // Pre-speak hook endpoint
-app.post('/api/hooks/pre-speak', (_req: Request, res: Response) => {
+app.post('/api/hooks/pre-speak', (req: Request, res: Response) => {
+  registerSessionFromRequest(req);
   const result = handleHookRequest('speak');
   res.json(result);
 });
 
 // Pre-wait hook endpoint
-app.post('/api/hooks/pre-wait', (_req: Request, res: Response) => {
+app.post('/api/hooks/pre-wait', (req: Request, res: Response) => {
+  registerSessionFromRequest(req);
   const result = handleHookRequest('wait');
   res.json(result);
 });
 
 // Post-tool hook endpoint
-app.post('/api/hooks/post-tool', (_req: Request, res: Response) => {
+app.post('/api/hooks/post-tool', (req: Request, res: Response) => {
+  registerSessionFromRequest(req);
   // Use the unified handler with 'post-tool' action
   const result = handleHookRequest('post-tool');
   res.json(result);
@@ -540,6 +605,86 @@ app.delete('/api/utterances', (_req: Request, res: Response) => {
   res.json({
     success: true,
     message: `Cleared ${clearedCount} utterances`,
+    clearedCount
+  });
+});
+
+// Session management API endpoints
+app.get('/api/sessions', (_req: Request, res: Response) => {
+  const sessions = sessionManager.getAllSessions();
+  const activeSessionId = sessionManager.getActiveSession()?.id || null;
+  
+  res.json({
+    sessions: sessions.map(session => ({
+      id: session.id,
+      projectPath: session.projectPath,
+      projectName: session.projectName,
+      isActive: session.isActive,
+      lastActivity: session.lastActivity,
+      pendingUtterances: session.utteranceQueue.utterances.filter(u => u.status === 'pending').length,
+      totalUtterances: session.utteranceQueue.utterances.length,
+      metadata: session.metadata
+    })),
+    activeSessionId,
+    summary: sessionManager.getSessionSummary()
+  });
+});
+
+app.post('/api/sessions/:sessionId/activate', (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  const success = sessionManager.setActiveSession(sessionId);
+  
+  if (success) {
+    res.json({
+      success: true,
+      activeSessionId: sessionId,
+      message: `Activated session ${sessionId}`
+    });
+  } else {
+    res.status(404).json({
+      success: false,
+      error: 'Session not found or inactive'
+    });
+  }
+});
+
+app.delete('/api/sessions/:sessionId', (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  const session = sessionManager.getSession(sessionId);
+  
+  if (!session) {
+    res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+    return;
+  }
+  
+  sessionManager.removeSession(sessionId);
+  res.json({
+    success: true,
+    message: `Removed session ${sessionId}`
+  });
+});
+
+app.post('/api/sessions/:sessionId/utterances/clear', (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  const session = sessionManager.getSession(sessionId);
+  
+  if (!session) {
+    res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+    return;
+  }
+  
+  const clearedCount = session.utteranceQueue.utterances.length;
+  session.utteranceQueue.clear();
+  
+  res.json({
+    success: true,
+    message: `Cleared ${clearedCount} utterances from session ${sessionId}`,
     clearedCount
   });
 });
@@ -579,8 +724,13 @@ app.get('/api/tts-events', (_req: Request, res: Response) => {
 });
 
 // Helper function to notify all connected TTS clients
-function notifyTTSClients(text: string) {
-  const message = JSON.stringify({ type: 'speak', text });
+function notifyTTSClients(text: string, sessionId?: string, sessionName?: string) {
+  const message = JSON.stringify({ 
+    type: 'speak', 
+    text,
+    sessionId: sessionId || null,
+    sessionName: sessionName || null
+  });
   ttsClients.forEach(client => {
     client.write(`data: ${message}\n\n`);
   });
@@ -589,6 +739,32 @@ function notifyTTSClients(text: string) {
 // Helper function to notify all connected clients about wait status
 function notifyWaitStatus(isWaiting: boolean) {
   const message = JSON.stringify({ type: 'waitStatus', isWaiting });
+  ttsClients.forEach(client => {
+    client.write(`data: ${message}\n\n`);
+  });
+}
+
+// Helper function to notify all connected clients about session changes
+function notifySessionUpdate() {
+  const sessions = sessionManager.getAllSessions();
+  const activeSessionId = sessionManager.getActiveSession()?.id || null;
+  
+  const message = JSON.stringify({
+    type: 'sessionUpdate',
+    sessions: sessions.map(session => ({
+      id: session.id,
+      projectPath: session.projectPath,
+      projectName: session.projectName,
+      isActive: session.isActive,
+      lastActivity: session.lastActivity,
+      pendingUtterances: session.utteranceQueue.utterances.filter(u => u.status === 'pending').length,
+      totalUtterances: session.utteranceQueue.utterances.length,
+      metadata: session.metadata
+    })),
+    activeSessionId,
+    summary: sessionManager.getSessionSummary()
+  });
+  
   ttsClients.forEach(client => {
     client.write(`data: ${message}\n\n`);
   });
@@ -653,9 +829,45 @@ app.post('/api/speak', async (req: Request, res: Response) => {
   }
 
   try {
-    // Always notify browser clients - they decide how to speak
-    notifyTTSClients(text);
-    debugLog(`[Speak] Sent text to browser for TTS: "${text}"`);
+    // Try to determine which session is speaking by looking at delivered utterances
+    let speakingSessionId: string | undefined;
+    let speakingSessionName: string | undefined;
+    
+    // First, check the active session for delivered utterances
+    const activeSession = sessionManager.getActiveSession();
+    if (activeSession) {
+      const activeDeliveredUtterances = activeSession.utteranceQueue.utterances.filter(u => u.status === 'delivered');
+      if (activeDeliveredUtterances.length > 0) {
+        speakingSessionId = activeSession.id;
+        speakingSessionName = activeSession.projectName;
+      }
+    }
+    
+    // If not found in active session, check all sessions
+    if (!speakingSessionId) {
+      const allSessions = sessionManager.getAllSessions();
+      for (const session of allSessions) {
+        const deliveredUtterances = session.utteranceQueue.utterances.filter(u => u.status === 'delivered');
+        if (deliveredUtterances.length > 0) {
+          speakingSessionId = session.id;
+          speakingSessionName = session.projectName;
+          break;
+        }
+      }
+    }
+    
+    // Fall back to global queue if no session has delivered utterances
+    if (!speakingSessionId) {
+      const globalDeliveredUtterances = queue.utterances.filter(u => u.status === 'delivered');
+      if (globalDeliveredUtterances.length > 0) {
+        speakingSessionId = 'global';
+        speakingSessionName = 'Global Queue';
+      }
+    }
+
+    // Notify browser clients with session information
+    notifyTTSClients(text, speakingSessionId, speakingSessionName);
+    debugLog(`[Speak] Sent text to browser for TTS: "${text}" (Session: ${speakingSessionName || 'unknown'})`);
 
     // Note: The browser will decide whether to use system voice or browser voice
 
@@ -671,7 +883,9 @@ app.post('/api/speak', async (req: Request, res: Response) => {
     res.json({
       success: true,
       message: 'Text spoken successfully',
-      respondedCount: deliveredUtterances.length
+      respondedCount: deliveredUtterances.length,
+      sessionId: speakingSessionId,
+      sessionName: speakingSessionName
     });
   } catch (error) {
     debugLog(`[Speak] Failed to speak text: ${error}`);

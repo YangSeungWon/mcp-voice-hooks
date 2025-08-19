@@ -6,6 +6,10 @@ class VoiceHooksClient {
         this.clearAllBtn = document.getElementById('clearAllBtn');
         this.utterancesList = document.getElementById('utterancesList');
         this.infoMessage = document.getElementById('infoMessage');
+        
+        // Session management elements
+        this.refreshSessionsBtn = document.getElementById('refreshSessionsBtn');
+        this.sessionsGrid = document.getElementById('sessionsGrid');
 
         // Voice controls
         this.listenBtn = document.getElementById('listenBtn');
@@ -42,9 +46,13 @@ class VoiceHooksClient {
 
         this.setupEventListeners();
         this.loadData();
+        this.loadSessions();
 
         // Auto-refresh every 2 seconds
-        setInterval(() => this.loadData(), 2000);
+        setInterval(() => {
+            this.loadData();
+            this.loadSessions();
+        }, 2000);
     }
 
     initializeSpeechRecognition() {
@@ -123,6 +131,9 @@ class VoiceHooksClient {
         this.refreshBtn.addEventListener('click', () => this.loadData());
         this.clearAllBtn.addEventListener('click', () => this.clearAllUtterances());
         this.listenBtn.addEventListener('click', () => this.toggleListening());
+        
+        // Session management event listeners
+        this.refreshSessionsBtn.addEventListener('click', () => this.loadSessions());
 
         // Language filter
         if (this.languageSelect) {
@@ -378,9 +389,11 @@ class VoiceHooksClient {
                 this.debugLog('TTS Event:', data);
 
                 if (data.type === 'speak' && data.text) {
-                    this.speakText(data.text);
+                    this.handleSpeakEvent(data);
                 } else if (data.type === 'waitStatus') {
                     this.handleWaitStatus(data.isWaiting);
+                } else if (data.type === 'sessionUpdate') {
+                    this.handleSessionUpdate(data);
                 }
             } catch (error) {
                 console.error('Failed to parse TTS event:', error);
@@ -774,6 +787,218 @@ class VoiceHooksClient {
             // Back to normal listening state
             listeningIndicatorText.textContent = 'Listening...';
             this.debugLog('Claude finished waiting');
+        }
+    }
+
+    handleSpeakEvent(data) {
+        const { text, sessionId, sessionName } = data;
+        
+        // Show which session is speaking in the sessions grid
+        this.highlightSpeakingSession(sessionId, sessionName);
+        
+        // Speak the text
+        this.speakText(text);
+        
+        // Log session information
+        if (sessionName) {
+            this.debugLog(`Speaking from session: ${sessionName} (${sessionId})`);
+        } else {
+            this.debugLog(`Speaking (no session information)`);
+        }
+    }
+
+    highlightSpeakingSession(sessionId, sessionName) {
+        // Remove previous speaking indicators
+        this.sessionsGrid.querySelectorAll('.session-card').forEach(card => {
+            card.classList.remove('speaking');
+        });
+        
+        // Add speaking indicator to the current session
+        if (sessionId && sessionId !== 'global') {
+            const sessionCard = this.sessionsGrid.querySelector(`[data-session-id="${sessionId}"]`);
+            if (sessionCard) {
+                sessionCard.classList.add('speaking');
+                
+                // Remove the speaking indicator after 3 seconds
+                setTimeout(() => {
+                    sessionCard.classList.remove('speaking');
+                }, 3000);
+            }
+        }
+        
+        // Update the session title in the UI to show speaking status
+        if (sessionName && sessionId !== 'global') {
+            const sessionCard = this.sessionsGrid.querySelector(`[data-session-id="${sessionId}"]`);
+            if (sessionCard) {
+                const titleElement = sessionCard.querySelector('.session-title');
+                if (titleElement) {
+                    const originalTitle = titleElement.textContent;
+                    titleElement.innerHTML = `🎤 ${originalTitle}`;
+                    
+                    // Restore original title after 3 seconds
+                    setTimeout(() => {
+                        titleElement.textContent = originalTitle;
+                    }, 3000);
+                }
+            }
+        }
+    }
+
+    handleSessionUpdate(data) {
+        // Update sessions grid without triggering a new API call
+        this.renderSessions(data.sessions, data.activeSessionId);
+        this.debugLog('Real-time session update received:', data.summary);
+    }
+
+    // Session management methods
+    async loadSessions() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/sessions`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            this.renderSessions(data.sessions, data.activeSessionId);
+        } catch (error) {
+            console.error('Failed to load sessions:', error);
+            this.renderSessionsError();
+        }
+    }
+
+    renderSessions(sessions, activeSessionId) {
+        if (!sessions || sessions.length === 0) {
+            this.sessionsGrid.innerHTML = '<div class="empty-state">No sessions detected. Start Claude Code in any project to see sessions here.</div>';
+            return;
+        }
+
+        const sessionCards = sessions.map(session => this.createSessionCard(session, activeSessionId === session.id));
+        this.sessionsGrid.innerHTML = sessionCards.join('');
+
+        // Add event listeners to session cards
+        this.sessionsGrid.querySelectorAll('.session-card').forEach(card => {
+            const sessionId = card.dataset.sessionId;
+            card.addEventListener('click', (e) => {
+                if (!e.target.closest('.session-btn')) {
+                    this.activateSession(sessionId);
+                }
+            });
+        });
+
+        // Add event listeners to action buttons
+        this.sessionsGrid.querySelectorAll('.session-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const action = btn.dataset.action;
+                const sessionId = btn.closest('.session-card').dataset.sessionId;
+                
+                if (action === 'clear') {
+                    this.clearSessionUtterances(sessionId);
+                } else if (action === 'remove') {
+                    this.removeSession(sessionId);
+                }
+            });
+        });
+    }
+
+    renderSessionsError() {
+        this.sessionsGrid.innerHTML = '<div class="empty-state" style="color: #dc3545;">Failed to load sessions. Please check if the server is running.</div>';
+    }
+
+    createSessionCard(session, isActive) {
+        const lastActivityTime = new Date(session.lastActivity).toLocaleString();
+        const statusClass = session.isActive ? 'active' : 'inactive';
+        const projectName = session.projectName || 'Unknown Project';
+        const projectPath = session.projectPath || 'Unknown Path';
+
+        return `
+            <div class="session-card ${statusClass} ${isActive ? 'selected' : ''}" data-session-id="${session.id}">
+                <div class="session-header">
+                    <h4 class="session-title">${projectName}</h4>
+                </div>
+                <div class="session-path">${projectPath}</div>
+                <div class="session-stats">
+                    <div class="session-stat">
+                        <div class="session-stat-icon stat-pending"></div>
+                        <span>${session.pendingUtterances} pending</span>
+                    </div>
+                    <div class="session-stat">
+                        <div class="session-stat-icon stat-total"></div>
+                        <span>${session.totalUtterances} total</span>
+                    </div>
+                </div>
+                <div class="session-activity">Last activity: ${lastActivityTime}</div>
+                <div class="session-actions">
+                    <button class="session-btn" data-action="clear">Clear Utterances</button>
+                    <button class="session-btn danger" data-action="remove">Remove</button>
+                </div>
+            </div>
+        `;
+    }
+
+    async activateSession(sessionId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/activate`, {
+                method: 'POST'
+            });
+
+            if (response.ok) {
+                this.debugLog(`Activated session: ${sessionId}`);
+                // Reload sessions to update the UI
+                this.loadSessions();
+            } else {
+                const error = await response.json();
+                console.error('Failed to activate session:', error);
+            }
+        } catch (error) {
+            console.error('Error activating session:', error);
+        }
+    }
+
+    async clearSessionUtterances(sessionId) {
+        if (!confirm('Are you sure you want to clear all utterances for this session?')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/utterances/clear`, {
+                method: 'POST'
+            });
+
+            if (response.ok) {
+                this.debugLog(`Cleared utterances for session: ${sessionId}`);
+                // Reload sessions and utterances to update the UI
+                this.loadSessions();
+                this.loadData();
+            } else {
+                const error = await response.json();
+                console.error('Failed to clear session utterances:', error);
+            }
+        } catch (error) {
+            console.error('Error clearing session utterances:', error);
+        }
+    }
+
+    async removeSession(sessionId) {
+        if (!confirm('Are you sure you want to remove this session? This action cannot be undone.')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                this.debugLog(`Removed session: ${sessionId}`);
+                // Reload sessions to update the UI
+                this.loadSessions();
+            } else {
+                const error = await response.json();
+                console.error('Failed to remove session:', error);
+            }
+        } catch (error) {
+            console.error('Error removing session:', error);
         }
     }
 }

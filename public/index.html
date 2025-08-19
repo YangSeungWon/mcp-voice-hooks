@@ -407,6 +407,202 @@
         input:checked+.slider:before {
             transform: translateX(24px);
         }
+
+        /* Sessions section styles */
+        .sessions-section {
+            margin-bottom: 24px;
+        }
+
+        .sessions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .session-card {
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 12px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .session-card:hover {
+            border-color: #007AFF;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 122, 255, 0.15);
+        }
+
+        .session-card.active {
+            border-color: #28A745;
+            background: linear-gradient(135deg, #f8fff9 0%, #e8f5e8 100%);
+        }
+
+        .session-card.selected {
+            border-color: #007AFF;
+            background: linear-gradient(135deg, #f0f8ff 0%, #e6f3ff 100%);
+            box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
+        }
+
+        .session-card.active::before {
+            content: "ACTIVE";
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #28A745;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .session-card.inactive {
+            opacity: 0.6;
+            border-color: #ccc;
+            background: #f8f9fa;
+        }
+
+        .session-card.inactive::before {
+            content: "INACTIVE";
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #6c757d;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .session-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 8px;
+        }
+
+        .session-title {
+            font-weight: 600;
+            color: #333;
+            margin: 0;
+            font-size: 16px;
+            line-height: 1.2;
+        }
+
+        .session-path {
+            font-size: 12px;
+            color: #666;
+            margin: 4px 0 8px 0;
+            word-break: break-all;
+        }
+
+        .session-stats {
+            display: flex;
+            gap: 12px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .session-stat {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .session-stat-icon {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .stat-pending {
+            background: #ffc107;
+        }
+
+        .stat-total {
+            background: #007AFF;
+        }
+
+        .session-activity {
+            font-size: 11px;
+            color: #999;
+            margin-top: 8px;
+        }
+
+        .session-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .session-btn {
+            background: #6c757d;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .session-btn:hover {
+            background: #545b62;
+        }
+
+        .session-btn.danger {
+            background: #dc3545;
+        }
+
+        .session-btn.danger:hover {
+            background: #c82333;
+        }
+
+        .session-card.speaking {
+            border-color: #ff6b6b;
+            background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+            animation: speakingPulse 1.5s infinite;
+        }
+
+        @keyframes speakingPulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.4);
+            }
+            50% {
+                box-shadow: 0 0 0 8px rgba(255, 107, 107, 0.1);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(255, 107, 107, 0);
+            }
+        }
+
+        .session-card.speaking::after {
+            content: "SPEAKING";
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #ff6b6b;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: bold;
+            animation: speakingBlink 1s infinite;
+        }
+
+        @keyframes speakingBlink {
+            0%, 50% {
+                opacity: 1;
+            }
+            51%, 100% {
+                opacity: 0.6;
+            }
+        }
     </style>
 </head>
 
@@ -474,6 +670,16 @@
                     <input type="number" id="speechRateInput" min="0.5" max="5" step="0.1" value="1">
                 </div>
                 <button class="tts-test-btn" id="testTTSBtn">Test Voice</button>
+            </div>
+        </div>
+
+        <div class="sessions-section">
+            <h3>
+                Claude Code Sessions
+                <button class="refresh-btn" id="refreshSessionsBtn">Refresh</button>
+            </h3>
+            <div class="sessions-grid" id="sessionsGrid">
+                <div class="empty-state">No sessions detected. Start Claude Code in any project to see sessions here.</div>
             </div>
         </div>
 
