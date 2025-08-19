@@ -241,12 +241,11 @@ export class SessionManager {
     const workingDir = sessionData.workingDirectory;
     const userAgent = sessionData.userAgent;
     
-    // Create a unique session key with timestamp if no identifying info available
+    // Create a session key - use default values to prevent multiple sessions
     let sessionKey: string;
     if (!projectPath && !workingDir) {
-      // If both projectPath and workingDir are missing, add timestamp to ensure uniqueness
-      const timestamp = Date.now();
-      sessionKey = `session_${timestamp}:${userAgent || 'unknown'}`;
+      // If both projectPath and workingDir are missing, use a consistent default
+      sessionKey = `default-session:${userAgent || 'unknown'}`;
     } else {
       // Use available information to create deterministic session ID
       sessionKey = `${projectPath || 'no-path'}:${workingDir || 'no-workdir'}:${userAgent || 'no-useragent'}`;

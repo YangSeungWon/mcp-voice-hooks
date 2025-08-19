@@ -532,7 +532,7 @@ function handleHookRequest(attemptedAction: 'tool' | 'speak' | 'wait' | 'stop' |
 function registerSessionFromRequest(req: Request): string {
   const sessionData: SessionData = {
     sessionId: req.body?.session_id,
-    workingDirectory: req.body?.cwd,
+    workingDirectory: req.body?.cwd || process.cwd(), // Use current working directory as fallback
     transcriptPath: req.body?.transcript_path,
     userAgent: req.headers['user-agent'] as string,
     clientVersion: (req.headers['x-claude-version'] || req.headers['x-client-version']) as string,
