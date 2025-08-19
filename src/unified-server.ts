@@ -15,7 +15,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { SessionManager, SessionInfo } from './session-manager.js';
+import { SessionManager, SessionInfo, SessionData } from './session-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -528,16 +528,17 @@ function handleHookRequest(attemptedAction: 'tool' | 'speak' | 'wait' | 'stop' |
   return { decision: 'approve' };
 }
 
-// Helper function to register session from request headers
+// Helper function to register session from request data
 function registerSessionFromRequest(req: Request): string {
-  const headers: Record<string, string | string[] | undefined> = {};
+  const sessionData: SessionData = {
+    sessionId: req.body?.session_id,
+    workingDirectory: req.body?.cwd,
+    transcriptPath: req.body?.transcript_path,
+    userAgent: req.headers['user-agent'] as string,
+    clientVersion: (req.headers['x-claude-version'] || req.headers['x-client-version']) as string,
+  };
   
-  // Copy relevant headers
-  for (const [key, value] of Object.entries(req.headers)) {
-    headers[key.toLowerCase()] = value;
-  }
-  
-  const sessionId = sessionManager.registerSession(headers);
+  const sessionId = sessionManager.registerSession(sessionData);
   debugLog(`[Session] Registered session from request: ${sessionId}`);
   return sessionId;
 }

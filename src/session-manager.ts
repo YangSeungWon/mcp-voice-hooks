@@ -16,6 +16,15 @@ export interface SessionInfo {
   };
 }
 
+export interface SessionData {
+  sessionId?: string;
+  projectPath?: string;
+  workingDirectory?: string;
+  userAgent?: string;
+  clientVersion?: string;
+  transcriptPath?: string;
+}
+
 export class SessionManager {
   private sessions = new Map<string, SessionInfo>();
   private activeSessionId: string | null = null;
@@ -43,15 +52,16 @@ export class SessionManager {
   }
 
   /**
-   * Register or update a session based on hook request headers
+   * Register or update a session based on session data
    */
-  registerSession(headers: Record<string, string | string[] | undefined>): string {
-    // Extract session information from headers
-    const sessionId = this.extractSessionId(headers);
-    const projectPath = this.extractProjectPath(headers);
-    const workingDirectory = this.extractWorkingDirectory(headers);
-    const userAgent = this.extractUserAgent(headers);
-    const clientVersion = this.extractClientVersion(headers);
+  registerSession(sessionData: SessionData): string {
+    debugLog(`[SessionManager] Registering session with data: ${JSON.stringify(sessionData)}`);
+    
+    const sessionId = this.generateSessionId(sessionData);
+    const projectPath = this.extractProjectPath(sessionData);
+    const projectName = this.extractProjectName(projectPath);
+    
+    debugLog(`[SessionManager] Generated session ID: ${sessionId}, projectPath: ${projectPath}, projectName: ${projectName}`);
 
     let session = this.sessions.get(sessionId);
     
@@ -60,14 +70,14 @@ export class SessionManager {
       session = {
         id: sessionId,
         projectPath,
-        projectName: this.extractProjectName(projectPath),
+        projectName,
         lastActivity: new Date(),
         isActive: true,
         utteranceQueue: new InMemoryUtteranceQueue(),
         metadata: {
-          workingDirectory,
-          userAgent,
-          clientVersion,
+          workingDirectory: sessionData.workingDirectory,
+          userAgent: sessionData.userAgent,
+          clientVersion: sessionData.clientVersion,
         },
       };
       this.sessions.set(sessionId, session);
@@ -83,11 +93,13 @@ export class SessionManager {
       // Update existing session
       session.lastActivity = new Date();
       session.isActive = true;
-      if (projectPath) session.projectPath = projectPath;
-      if (projectPath) session.projectName = this.extractProjectName(projectPath);
-      session.metadata.workingDirectory = workingDirectory;
-      session.metadata.userAgent = userAgent;
-      session.metadata.clientVersion = clientVersion;
+      if (projectPath) {
+        session.projectPath = projectPath;
+        session.projectName = projectName;
+      }
+      if (sessionData.workingDirectory) session.metadata.workingDirectory = sessionData.workingDirectory;
+      if (sessionData.userAgent) session.metadata.userAgent = sessionData.userAgent;
+      if (sessionData.clientVersion) session.metadata.clientVersion = sessionData.clientVersion;
     }
 
     return sessionId;
@@ -216,54 +228,53 @@ export class SessionManager {
   }
 
   /**
-   * Extract session ID from headers (using project path + user agent as fallback)
+   * Generate session ID from session data
    */
-  private extractSessionId(headers: Record<string, string | string[] | undefined>): string {
-    // Try to get session ID from custom header first
-    const customSessionId = this.getHeaderValue(headers, 'x-claude-session-id');
-    if (customSessionId) return customSessionId;
+  private generateSessionId(sessionData: SessionData): string {
+    // Use provided session ID if available
+    if (sessionData.sessionId) {
+      return sessionData.sessionId;
+    }
 
-    // Fall back to generating ID based on project path and user agent
-    const projectPath = this.extractProjectPath(headers);
-    const userAgent = this.extractUserAgent(headers);
-    const workingDir = this.extractWorkingDirectory(headers);
+    // Fall back to generating ID based on available information
+    const projectPath = this.extractProjectPath(sessionData);
+    const workingDir = sessionData.workingDirectory;
+    const userAgent = sessionData.userAgent;
     
-    // Create a deterministic session ID based on available information
-    const sessionKey = `${projectPath || 'unknown'}:${workingDir || 'unknown'}:${userAgent || 'unknown'}`;
+    // Create a unique session key with timestamp if no identifying info available
+    let sessionKey: string;
+    if (!projectPath && !workingDir) {
+      // If both projectPath and workingDir are missing, add timestamp to ensure uniqueness
+      const timestamp = Date.now();
+      sessionKey = `session_${timestamp}:${userAgent || 'unknown'}`;
+    } else {
+      // Use available information to create deterministic session ID
+      sessionKey = `${projectPath || 'no-path'}:${workingDir || 'no-workdir'}:${userAgent || 'no-useragent'}`;
+    }
     
     // Use a simple hash to create consistent session IDs
     return this.simpleHash(sessionKey);
   }
 
   /**
-   * Extract project path from headers
+   * Extract project path from session data
    */
-  private extractProjectPath(headers: Record<string, string | string[] | undefined>): string | undefined {
-    return this.getHeaderValue(headers, 'x-claude-project-path') || 
-           this.getHeaderValue(headers, 'x-working-directory');
-  }
-
-  /**
-   * Extract working directory from headers
-   */
-  private extractWorkingDirectory(headers: Record<string, string | string[] | undefined>): string | undefined {
-    return this.getHeaderValue(headers, 'x-working-directory') ||
-           this.getHeaderValue(headers, 'x-claude-working-directory');
-  }
-
-  /**
-   * Extract user agent from headers
-   */
-  private extractUserAgent(headers: Record<string, string | string[] | undefined>): string | undefined {
-    return this.getHeaderValue(headers, 'user-agent');
-  }
-
-  /**
-   * Extract Claude Code client version from headers
-   */
-  private extractClientVersion(headers: Record<string, string | string[] | undefined>): string | undefined {
-    return this.getHeaderValue(headers, 'x-claude-version') ||
-           this.getHeaderValue(headers, 'x-client-version');
+  private extractProjectPath(sessionData: SessionData): string | undefined {
+    // Use explicit project path if provided
+    if (sessionData.projectPath) {
+      return sessionData.projectPath;
+    }
+    
+    // Extract from transcript path if available
+    if (sessionData.transcriptPath) {
+      const transcriptDir = sessionData.transcriptPath.replace(/\/\.claude\/.*$/, '');
+      if (transcriptDir !== sessionData.transcriptPath) {
+        return transcriptDir;
+      }
+    }
+    
+    // Fall back to working directory
+    return sessionData.workingDirectory;
   }
 
   /**
@@ -277,16 +288,6 @@ export class SessionManager {
     return parts.length > 0 ? parts[parts.length - 1] : undefined;
   }
 
-  /**
-   * Get header value as string
-   */
-  private getHeaderValue(headers: Record<string, string | string[] | undefined>, key: string): string | undefined {
-    const value = headers[key.toLowerCase()];
-    if (Array.isArray(value)) {
-      return value[0];
-    }
-    return value;
-  }
 
   /**
    * Simple hash function for creating consistent session IDs
