@@ -4,13 +4,14 @@ class VoiceHooksClient {
         this.debug = localStorage.getItem('voiceHooksDebug') === 'true';
         this.refreshBtn = document.getElementById('refreshBtn');
         this.clearAllBtn = document.getElementById('clearAllBtn');
-        this.utterancesList = document.getElementById('utterancesList');
+        this.chatContainer = document.getElementById('chatContainer');
+        this.typingIndicator = document.getElementById('typingIndicator');
+        this.messages = []; // Store all chat messages
         this.infoMessage = document.getElementById('infoMessage');
         
         
         // Dashboard elements
         this.systemStatsFooter = document.getElementById('systemStatsFooter');
-        this.activityFeedList = document.getElementById('activityFeedList');
         this.voiceSection = document.getElementById('voiceSection');
         this.voiceSettingsBtn = document.getElementById('voiceSettingsBtn');
         this.hideVoiceBtn = document.getElementById('hideVoiceBtn');
@@ -28,13 +29,8 @@ class VoiceHooksClient {
         this.utteranceInput = document.getElementById('utteranceInput');
         this.sendBtn = document.getElementById('sendBtn');
 
-        // Unified voice feed
-        this.voiceFeed = [];
-        this.maxFeedItems = 50;
-
         // System info
         this.systemInfo = null;
-        this.activityFeed = [];
 
         // Speech recognition
         this.recognition = null;
@@ -44,6 +40,7 @@ class VoiceHooksClient {
         this.isPushToTalkKeyPressed = false;
         this.pushToTalkKeyCode = localStorage.getItem('pushToTalkKey') || 'Space';
         this.isSendingMessage = false; // Flag to prevent duplicate text message submissions
+        this.wasListeningBeforeTTS = false; // Track listening state before TTS
         this.initializeSpeechRecognition();
 
         // Speech synthesis
@@ -303,38 +300,101 @@ class VoiceHooksClient {
     }
 
     updateUtterancesList(utterances) {
-        if (utterances.length === 0) {
-            this.utterancesList.innerHTML = '<div class="empty-state">Nothing yet.</div>';
-            this.infoMessage.style.display = 'none';
-            return;
-        }
+        // Convert utterances to chat messages format
+        // Keep existing messages that are not yet persisted (like recent speak events)
+        const recentMessages = this.messages.filter(msg => 
+            msg.type === 'assistant' && 
+            Date.now() - new Date(msg.timestamp).getTime() < 10000 && // Keep messages from last 10 seconds
+            !msg.persisted // Only keep messages that aren't persisted yet
+        );
+        this.messages = [];
+        
+        utterances.forEach(utterance => {
+            // Add user message
+            this.messages.push({
+                type: 'user',
+                text: utterance.text,
+                timestamp: utterance.timestamp,
+                status: utterance.status,
+                persisted: true
+            });
+            
+            // If there's a response, add assistant message
+            if (utterance.response) {
+                this.messages.push({
+                    type: 'assistant', 
+                    text: utterance.response,
+                    timestamp: utterance.timestamp,
+                    persisted: true
+                });
+            }
+        });
 
+        // Add back recent messages that weren't persisted yet, avoiding duplicates
+        const existingTexts = new Set(this.messages.filter(m => m.type === 'assistant').map(m => m.text));
+        const uniqueRecentMessages = recentMessages.filter(msg => !existingTexts.has(msg.text));
+        this.messages.push(...uniqueRecentMessages);
+        
+        this.renderChatMessages();
+        
         // Check if all messages are pending
         const allPending = utterances.every(u => u.status === 'pending');
-        if (allPending) {
-            // Show info message but don't replace the utterances list
+        if (allPending && utterances.length > 0) {
             this.infoMessage.style.display = 'block';
         } else {
-            // Hide info message when at least one utterance is delivered
             this.infoMessage.style.display = 'none';
         }
-
-        this.utterancesList.innerHTML = utterances.map(utterance => `
-            <div class="utterance-item">
-                <div class="utterance-text">${this.escapeHtml(utterance.text)}</div>
-                <div class="utterance-meta">
-                    <div>${this.formatTimestamp(utterance.timestamp)}</div>
-                    <div class="utterance-status status-${utterance.status}">
-                        ${utterance.status.toUpperCase()}
-                    </div>
-                </div>
-            </div>
-        `).join('');
     }
 
     formatTimestamp(timestamp) {
         const date = new Date(timestamp);
         return date.toLocaleString(); // Use full date and time with local timezone
+    }
+
+    renderChatMessages() {
+        console.log('🖥️ [CHAT] Rendering chat messages, count:', this.messages.length);
+        const container = this.chatContainer;
+        if (!container) {
+            console.error('🖥️ [CHAT] Chat container not found!');
+            return;
+        }
+
+        if (this.messages.length === 0) {
+            console.log('🖥️ [CHAT] No messages, showing empty state');
+            container.innerHTML = '<div class="empty-state">Start a conversation by speaking or typing...</div>';
+            return;
+        }
+
+        container.innerHTML = this.messages.map(message => `
+            <div class="message-bubble ${message.type}">
+                <div class="message-text">${this.escapeHtml(message.text)}</div>
+                <div class="message-time">${this.formatChatTime(message.timestamp)}</div>
+                ${message.status ? `<div class="message-status status-${message.status}">${message.status.toUpperCase()}</div>` : ''}
+            </div>
+        `).join('') + '<div class="typing-indicator" id="typingIndicator"><div class="typing-dots"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div></div>';
+
+        // Scroll to bottom
+        container.scrollTop = container.scrollHeight;
+    }
+
+    formatChatTime(timestamp) {
+        const date = new Date(timestamp);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    showTypingIndicator() {
+        const indicator = document.getElementById('typingIndicator');
+        if (indicator) {
+            indicator.style.display = 'block';
+            this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+        }
+    }
+
+    hideTypingIndicator() {
+        const indicator = document.getElementById('typingIndicator');
+        if (indicator) {
+            indicator.style.display = 'none';
+        }
     }
 
     escapeHtml(text) {
@@ -482,6 +542,12 @@ class VoiceHooksClient {
         
         this.debugLog('Sending voice utterance:', trimmedText);
 
+        // Add user message to chat
+        this.addUserMessage(trimmedText);
+        
+        // Show typing indicator
+        this.showTypingIndicator();
+
         try {
             const response = await fetch(`${this.baseUrl}/api/potential-utterances`, {
                 method: 'POST',
@@ -512,10 +578,24 @@ class VoiceHooksClient {
                 const error = await response.json();
                 console.log(`   ❌ Failed to send voice input:`, error);
                 console.error('Error sending voice utterance:', error);
+                this.hideTypingIndicator();
             }
         } catch (error) {
             console.error('Failed to send voice utterance:', error);
+            this.hideTypingIndicator();
         }
+    }
+    
+    addUserMessage(text) {
+        console.log('👤 [CHAT] Adding user message:', text);
+        this.messages.push({
+            type: 'user',
+            text: text,
+            timestamp: new Date().toISOString(),
+            status: 'pending'
+        });
+        console.log('👤 [CHAT] Total messages:', this.messages.length);
+        this.renderChatMessages();
     }
 
     async clearAllUtterances() {
@@ -533,6 +613,8 @@ class VoiceHooksClient {
 
             if (response.ok) {
                 const result = await response.json();
+                this.messages = []; // Clear chat messages
+                this.renderChatMessages(); // Refresh chat display
                 this.loadData(); // Refresh the list
                 this.debugLog('Cleared all utterances:', result);
             } else {
@@ -897,10 +979,20 @@ class VoiceHooksClient {
             // Event handlers
             utterance.onstart = () => {
                 this.debugLog('Started speaking:', text);
+                // Pause voice input during TTS
+                if (this.isListening) {
+                    this.wasListeningBeforeTTS = true;
+                    this.stopListening();
+                }
             };
 
             utterance.onend = () => {
                 this.debugLog('Finished speaking');
+                // Resume voice input after TTS if it was active before
+                if (this.wasListeningBeforeTTS) {
+                    this.wasListeningBeforeTTS = false;
+                    this.startListening();
+                }
             };
 
             utterance.onerror = (event) => {
@@ -1085,11 +1177,12 @@ class VoiceHooksClient {
             console.log(`   📍 No session information`);
         }
         
-        // Show which session is speaking in the sessions grid with instance info
-        this.highlightSpeakingSession(sessionId, sessionName, instanceUrl);
+        // Hide typing indicator
+        this.hideTypingIndicator();
         
-        // Show in voice feed (filtered by current selection)
-        this.addToVoiceFeed(data);
+        // Add assistant message to chat
+        this.addAssistantMessage(text);
+        
         
         // Speak the text
         this.speakText(text);
@@ -1103,194 +1196,26 @@ class VoiceHooksClient {
             this.debugLog(`Speaking (no session information)`);
         }
     }
-
-    addToVoiceFeed(data) {
-        const { text, sessionId, sessionName, instanceUrl, at } = data;
-        
-        const feedItem = {
-            id: Date.now() + Math.random(),
-            text,
-            sessionId,
-            sessionName: sessionName || 'Unknown Session',
-            instanceUrl: instanceUrl || 'Unknown Instance',
-            timestamp: at || Date.now(),
-            displayTime: new Date().toLocaleString()
-        };
-        
-        // Add to feed and maintain max items
-        this.voiceFeed.unshift(feedItem);
-        if (this.voiceFeed.length > this.maxFeedItems) {
-            this.voiceFeed = this.voiceFeed.slice(0, this.maxFeedItems);
-        }
-        
-        // Update voice feed display (will respect current filter)
-        this.updateVoiceFeedDisplay();
-        
-        this.debugLog('Added to voice feed:', feedItem);
-    }
-
-    updateVoiceFeedDisplay() {
-        // Create or get voice feed container
-        let voiceFeedContainer = document.getElementById('voiceFeedContainer');
-        if (!voiceFeedContainer) {
-            this.createVoiceFeedUI();
-            voiceFeedContainer = document.getElementById('voiceFeedContainer');
-        }
-
-        const feedList = document.getElementById('voiceFeedList');
-        if (!feedList) return;
-
-        // Filter voice feed based on current filter
-        let filteredFeed = this.voiceFeed;
-        if (this.voiceFeedFilter === 'session' && this.selectedSessionId) {
-            filteredFeed = this.voiceFeed.filter(item => item.sessionId === this.selectedSessionId);
-        } else if (this.voiceFeedFilter !== 'all' && this.voiceFeedFilter !== 'session') {
-            // Filter by specific session ID
-            filteredFeed = this.voiceFeed.filter(item => item.sessionId === this.voiceFeedFilter);
-        }
-
-        if (filteredFeed.length === 0) {
-            const emptyMessage = this.voiceFeedFilter === 'all' 
-                ? 'No voice activity yet.' 
-                : `No voice activity for ${this.voiceFeedFilter === 'session' ? 'selected session' : 'this session'}.`;
-            feedList.innerHTML = `<div class="empty-state">${emptyMessage}</div>`;
-            return;
-        }
-
-        feedList.innerHTML = filteredFeed.map(item => `
-            <div class="voice-feed-item">
-                <div class="voice-feed-header">
-                    <div class="voice-feed-session">
-                        <span class="session-badge" style="background-color: ${this.getSessionColor(item.sessionId)}">
-                            ${item.sessionName}
-                        </span>
-                        <span class="instance-badge">${this.getInstanceLabel(item.instanceUrl)}</span>
-                    </div>
-                    <div class="voice-feed-time">${item.displayTime}</div>
-                </div>
-                <div class="voice-feed-text">${this.escapeHtml(item.text)}</div>
-            </div>
-        `).join('');
-    }
-
-    createVoiceFeedUI() {
-        // Add voice feed section to the page
-        const container = document.querySelector('.container');
-        if (!container) return;
-
-        const voiceFeedHTML = `
-            <div id="voiceFeedContainer" class="section voice-feed-section">
-                <div class="header">
-                    <h2>🎤 Voice Feed</h2>
-                    <div class="voice-feed-controls">
-                        <select id="voiceFeedFilter" class="voice-feed-filter">
-                            <option value="all">All Sessions</option>
-                            <option value="session">Active Session Only</option>
-                        </select>
-                        <button id="clearVoiceFeedBtn" class="btn secondary-btn">Clear Feed</button>
-                    </div>
-                </div>
-                <div id="voiceFeedList" class="voice-feed-list">
-                    <div class="empty-state">No voice activity yet.</div>
-                </div>
-            </div>
-        `;
-
-        // Insert before sessions section
-        const sessionsSection = document.querySelector('.sessions-section');
-        if (sessionsSection) {
-            sessionsSection.insertAdjacentHTML('beforebegin', voiceFeedHTML);
-        } else {
-            container.insertAdjacentHTML('beforeend', voiceFeedHTML);
-        }
-
-        // Add event listener for clear button
-        const clearBtn = document.getElementById('clearVoiceFeedBtn');
-        if (clearBtn) {
-            clearBtn.addEventListener('click', () => this.clearVoiceFeed());
-        }
-
-        // Add event listener for filter dropdown
-        const filterSelect = document.getElementById('voiceFeedFilter');
-        if (filterSelect) {
-            // Set initial value
-            filterSelect.value = this.voiceFeedFilter;
-            
-            filterSelect.addEventListener('change', (e) => {
-                this.voiceFeedFilter = e.target.value;
-                this.updateVoiceFeedDisplay();
-                this.debugLog(`Voice feed filter changed to: ${this.voiceFeedFilter}`);
-            });
-        }
-    }
-
-    clearVoiceFeed() {
-        this.voiceFeed = [];
-        this.updateVoiceFeedDisplay();
-        this.debugLog('Voice feed cleared');
-    }
-
-    getSessionColor(sessionId) {
-        // Generate consistent color for session ID
-        if (!sessionId) return 'hsl(0, 0%, 50%)'; // Default gray color for unknown sessions
-        let hash = 0;
-        for (let i = 0; i < sessionId.length; i++) {
-            const char = sessionId.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash; // Convert to 32-bit integer
-        }
-        
-        const hue = Math.abs(hash % 360);
-        return `hsl(${hue}, 70%, 50%)`;
-    }
-
-    getInstanceLabel(instanceUrl) {
-        if (!instanceUrl) return 'Unknown';
-        try {
-            const url = new URL(instanceUrl);
-            const port = url.port;
-            return port === '5111' ? 'Primary' : `Secondary:${port}`;
-        } catch {
-            return 'Unknown';
-        }
-    }
-
-    highlightSpeakingSession(sessionId, sessionName, instanceUrl) {
-        // Remove previous speaking indicators
-        this.sessionsGrid.querySelectorAll('.session-card').forEach(card => {
-            card.classList.remove('speaking');
+    
+    addAssistantMessage(text) {
+        console.log('🤖 [CHAT] Adding assistant message:', text);
+        this.messages.push({
+            type: 'assistant',
+            text: text,
+            timestamp: new Date().toISOString(),
+            persisted: false // Mark as not yet persisted to server
         });
-        
-        // Add speaking indicator to the current session
-        if (sessionId && sessionId !== 'global') {
-            const sessionCard = this.sessionsGrid.querySelector(`[data-session-id="${sessionId}"]`);
-            if (sessionCard) {
-                sessionCard.classList.add('speaking');
-                
-                // Remove the speaking indicator after 3 seconds
-                setTimeout(() => {
-                    sessionCard.classList.remove('speaking');
-                }, 3000);
-            }
-        }
-        
-        // Update the session title in the UI to show speaking status
-        if (sessionName && sessionId !== 'global') {
-            const sessionCard = this.sessionsGrid.querySelector(`[data-session-id="${sessionId}"]`);
-            if (sessionCard) {
-                const titleElement = sessionCard.querySelector('.session-title');
-                if (titleElement) {
-                    const originalTitle = titleElement.textContent;
-                    titleElement.innerHTML = `🎤 ${originalTitle}`;
-                    
-                    // Restore original title after 3 seconds
-                    setTimeout(() => {
-                        titleElement.textContent = originalTitle;
-                    }, 3000);
-                }
-            }
-        }
+        console.log('🤖 [CHAT] Total messages:', this.messages.length);
+        this.renderChatMessages();
     }
+
+
+
+
+
+
+
+    // Removed session highlighting - single session system
 
 
 
@@ -1411,7 +1336,7 @@ class VoiceHooksClient {
                         <span class="activity-session">${activity.sessionName || 'Unknown Session'}</span>
                         <span class="activity-time">${new Date(activity.timestamp).toLocaleString()}</span>
                     </div>
-                    <div class="activity-text">${this.escapeHtml(activity.content)}</div>
+                    <div class="activity-text">${this.escapeHtml(activity.content || 'No content')}</div>
                     <div class="activity-meta">
                         <span class="activity-type">${activity.type.replace('_', ' ')}</span>
                         <span class="activity-status status-${activity.status}">${activity.status}</span>
@@ -1621,12 +1546,18 @@ class VoiceHooksClient {
 
     // Enhanced activity feed rendering
     renderActivityFeed() {
-        if (!this.activityFeed || this.activityFeed.length === 0) {
-            this.activityFeedList.innerHTML = '<div class="empty-state">No recent activity.</div>';
+        const activityFeedList = document.getElementById('activityFeedList');
+        if (!activityFeedList) {
+            console.log('Activity feed list element not found, skipping render');
             return;
         }
 
-        this.activityFeedList.innerHTML = this.activityFeed.slice(0, 10).map(activity => {
+        if (!this.activityFeed || this.activityFeed.length === 0) {
+            activityFeedList.innerHTML = '<div class="empty-state">No recent activity.</div>';
+            return;
+        }
+
+        activityFeedList.innerHTML = this.activityFeed.slice(0, 10).map(activity => {
             const timeAgo = this.getTimeAgo(new Date(activity.timestamp));
             const statusClass = `activity-status status-${activity.status}`;
             
@@ -1638,7 +1569,7 @@ class VoiceHooksClient {
                             <div class="activity-session">${activity.sessionName || 'Unknown Session'}</div>
                             <div class="activity-time">${timeAgo}</div>
                         </div>
-                        <div class="activity-text">${activity.content}</div>
+                        <div class="activity-text">${activity.content || 'No content'}</div>
                         <div class="activity-meta">
                             <span class="activity-type">${activity.type.replace('_', ' ')}</span>
                             <span class="${statusClass}">${activity.status.toUpperCase()}</span>

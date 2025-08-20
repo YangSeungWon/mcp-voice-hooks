@@ -10,6 +10,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import http from 'http';
 import { WebSocketServer } from 'ws';
+import WebSocket from 'ws';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { debugLog } from './debug.ts';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -683,9 +684,20 @@ function notifyTTSClients(text: string) {
     type: 'speak', 
     text
   });
+  
+  // Send via SSE
   ttsClients.forEach(client => {
     client.write(`data: ${message}\n\n`);
   });
+  
+  // Send via WebSocket
+  if (wss) {
+    wss.clients.forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(message);
+      }
+    });
+  }
 }
 
 // Helper function to notify all connected clients about wait status

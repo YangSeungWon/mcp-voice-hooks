@@ -20,11 +20,13 @@
 
         .container {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: 1fr;
             gap: 16px;
             height: 100vh;
             padding: 16px;
             box-sizing: border-box;
+            max-width: 800px;
+            margin: 0 auto;
         }
 
         .main-section {
@@ -35,6 +37,95 @@
             overflow-y: auto;
             display: flex;
             flex-direction: column;
+        }
+
+        /* Chat-style message bubbles */
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 16px 0;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+
+        .message-bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            position: relative;
+        }
+
+        .message-bubble.user {
+            align-self: flex-end;
+            background: #0084ff;
+            color: white;
+            border-bottom-right-radius: 6px;
+        }
+
+        .message-bubble.assistant {
+            align-self: flex-start;
+            background: #f0f0f0;
+            color: #333;
+            border-bottom-left-radius: 6px;
+        }
+
+        .message-time {
+            font-size: 11px;
+            opacity: 0.6;
+            margin-top: 4px;
+            text-align: right;
+        }
+
+        .message-bubble.user .message-time {
+            color: rgba(255,255,255,0.7);
+        }
+
+        .message-bubble.assistant .message-time {
+            color: rgba(0,0,0,0.5);
+            text-align: left;
+        }
+
+        .typing-indicator {
+            align-self: flex-start;
+            background: #f0f0f0;
+            padding: 12px 16px;
+            border-radius: 18px;
+            border-bottom-left-radius: 6px;
+            max-width: 70%;
+            display: none;
+        }
+
+        .typing-dots {
+            display: flex;
+            gap: 4px;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background: #999;
+            border-radius: 50%;
+            animation: typing 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        .typing-dot:nth-child(3) { animation-delay: 0s; }
+
+        @keyframes typing {
+            0%, 80%, 100% { opacity: 0.3; }
+            40% { opacity: 1; }
+        }
+
+        .chat-input-fixed {
+            position: sticky;
+            bottom: 0;
+            background: #161b22;
+            padding: 16px 0;
+            border-top: 1px solid #30363d;
+            margin-top: auto;
         }
 
         h1 {
@@ -689,86 +780,6 @@
             }
         }
 
-        /* Voice feed section styles */
-        .voice-feed-section {
-            margin-bottom: 24px;
-        }
-
-        .voice-feed-section .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-        }
-
-        .voice-feed-section h2 {
-            margin: 0;
-            color: #333;
-        }
-
-        .voice-feed-list {
-            max-height: 400px;
-            overflow-y: auto;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            background: white;
-        }
-
-        .voice-feed-item {
-            padding: 12px 16px;
-            border-bottom: 1px solid #eee;
-            transition: background-color 0.2s;
-        }
-
-        .voice-feed-item:last-child {
-            border-bottom: none;
-        }
-
-        .voice-feed-item:hover {
-            background-color: #f8f9fa;
-        }
-
-        .voice-feed-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-
-        .voice-feed-session {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-
-        .session-badge {
-            color: white;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: bold;
-            white-space: nowrap;
-        }
-
-        .instance-badge {
-            background: #6c757d;
-            color: white;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 10px;
-            font-weight: bold;
-            white-space: nowrap;
-        }
-
-        .voice-feed-time {
-            font-size: 12px;
-            color: #666;
-        }
-
-        .voice-feed-text {
-            color: #333;
-            line-height: 1.4;
-        }
 
         .btn {
             background: #21262d;
@@ -1217,21 +1228,69 @@
 
 <body>
     <div class="container">
-        <!-- Left Column: Sessions -->
+        <!-- Main Chat Interface -->
         <div class="main-section">
-            <h1>Sessions</h1>
-            <div class="sessions-section">
-                <div class="section-header">
-                    <h2>Active Sessions</h2>
-                    <div class="header-actions">
-                        <button class="btn secondary-btn" id="refreshSessionsBtn">🔄</button>
-                        <button class="btn" id="voiceSettingsBtn">🎤</button>
-                    </div>
-                </div>
-                <div class="sessions-grid" id="sessionsGrid">
-                    <div class="empty-state">No sessions detected. Start Claude Code in any project to see sessions here.</div>
+            <div class="section-header">
+                <h1>Claude Voice Chat</h1>
+                <div class="header-actions">
+                    <button class="btn secondary-btn" id="refreshBtn">🔄</button>
+                    <button class="btn" id="voiceSettingsBtn">🎤 Settings</button>
+                    <button class="btn secondary-btn" id="clearAllBtn" style="background: #DC3545;">🗑️</button>
                 </div>
             </div>
+
+            <!-- Chat Messages Area -->
+            <div class="chat-container" id="chatContainer">
+                <div class="empty-state">Start a conversation by speaking or typing...</div>
+                
+                <!-- Typing indicator -->
+                <div class="typing-indicator" id="typingIndicator">
+                    <div class="typing-dots">
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Fixed Input Area at Bottom -->
+            <div class="chat-input-fixed">
+                <!-- Voice Input Controls -->
+                <div class="voice-controls">
+                    <button id="listenBtn">
+                        <svg class="mic-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1ZM19 12C19 15.53 16.39 18.44 13 18.93V22H11V18.93C7.61 18.44 5 15.53 5 12H7C7 14.76 9.24 17 12 17C14.76 17 17 14.76 17 12H19Z" />
+                        </svg>
+                        <span id="listenBtnText">Start</span>
+                    </button>
+                    <div class="listening-indicator" id="listeningIndicator">
+                        <div class="listening-dot"></div>
+                        <span>Listening...</span>
+                    </div>
+                    <div class="push-to-talk-controls">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
+                            <input type="checkbox" id="pushToTalkToggle" style="transform: scale(1.2);">
+                            PTT
+                        </label>
+                        <select id="pushToTalkKey" style="padding: 4px 8px; font-size: 12px; border-radius: 4px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9;">
+                            <option value="Space">Spacebar</option>
+                            <option value="KeyT">T key</option>
+                            <option value="KeyV">V key</option>
+                            <option value="KeyB">B key</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Interim speech text -->
+                <div class="interim-text" id="interimText">Start speaking...</div>
+                
+                <!-- Text Input -->
+                <div class="input-group">
+                    <input type="text" id="utteranceInput" placeholder="Type or speak your message..." />
+                    <button id="sendBtn">Send</button>
+                </div>
+            </div>
+        </div>
 
             <!-- Voice Settings (Hidden by default) -->
             <div class="voice-section" id="voiceSection" style="display: none;">
@@ -1280,87 +1339,20 @@
                     </div>
                 </div>
             </div>
-        </div>
-
-        <!-- Center Column: Voice Chat -->
-        <div class="main-section">
-            <h1>Voice Chat</h1>
-            <div class="voice-chat-section">
-                <div class="section-header">
-                    <h2>Voice Interface</h2>
-                    <div class="header-actions">
-                        <button class="btn secondary-btn" id="refreshBtn">🔄</button>
-                        <button class="btn secondary-btn" id="clearAllBtn" style="background: #DC3545;">🗑️</button>
-                    </div>
-                </div>
-                
-                <!-- Voice Input Controls -->
-                <div class="voice-input-area">
-                    <div class="voice-controls">
-                        <button id="listenBtn">
-                            <svg class="mic-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                                <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1ZM19 12C19 15.53 16.39 18.44 13 18.93V22H11V18.93C7.61 18.44 5 15.53 5 12H7C7 14.76 9.24 17 12 17C14.76 17 17 14.76 17 12H19Z" />
-                            </svg>
-                            <span id="listenBtnText">Start</span>
-                        </button>
-                        <div class="listening-indicator" id="listeningIndicator">
-                            <div class="listening-dot"></div>
-                            <span>Listening...</span>
-                        </div>
-                        <div class="push-to-talk-controls">
-                            <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
-                                <input type="checkbox" id="pushToTalkToggle" style="transform: scale(1.2);">
-                                PTT
-                            </label>
-                            <select id="pushToTalkKey" style="padding: 4px 8px; font-size: 12px; border-radius: 4px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9;">
-                                <option value="Space">Spacebar</option>
-                                <option value="KeyT">T key</option>
-                                <option value="KeyV">V key</option>
-                                <option value="KeyB">B key</option>
-                            </select>
-                        </div>
-                        
-                        <!-- Push-to-talk status -->
-                        <div id="pushToTalkStatus" class="push-to-talk-status" style="display: none; font-size: 12px; color: #8b949e; margin-left: 12px;">
-                            <span id="pushToTalkStatusText">Ready</span>
-                        </div>
-                    </div>
-
-                    <!-- Text Input -->
-                    <div class="chat-input-area">
-                        <div class="interim-text" id="interimText">Start speaking...</div>
-                        <div class="input-group">
-                            <input type="text" id="utteranceInput" placeholder="Type or voice..." />
-                            <button id="sendBtn">Send</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Voice Messages List -->
-                <!-- Info message for pending utterances -->
-                <div id="infoMessage" class="info-message" style="display: none;">
-                    <div class="empty-state">All messages are pending. Make sure Claude Code is running and voice hooks are enabled.</div>
-                </div>
-
-                <!-- Voice Messages List -->
-                <div class="voice-messages" id="utterancesList">
-                    <div class="empty-state">Nothing yet.</div>
-                </div>
+            <!-- Push-to-talk status -->
+            <div id="pushToTalkStatus" class="push-to-talk-status" style="display: none; font-size: 12px; color: #8b949e; margin-left: 12px;">
+                <span id="pushToTalkStatusText">Ready</span>
             </div>
-        </div>
 
-        <!-- Right Column: Activity -->
-        <div class="main-section">
-            <h1>Activity</h1>
-            <div class="activity-section">
-                <div class="section-header">
-                    <h2>Recent Activity</h2>
-                    <button class="btn secondary-btn" id="refreshActivityBtn">🔄</button>
-                </div>
-                <div class="activity-feed-list" id="activityFeedList">
-                    <div class="empty-state">No recent activity.</div>
-                </div>
+            <!-- Info message for pending utterances -->
+            <div id="infoMessage" class="info-message" style="display: none;">
+                <div class="empty-state">All messages are pending. Make sure Claude Code is running and voice hooks are enabled.</div>
             </div>
+
+            <!-- Hidden elements for compatibility -->
+            <div id="utterancesList" style="display: none;"></div>
+            <div id="activityFeedList" style="display: none;"></div>
+            <div id="refreshActivityBtn" style="display: none;"></div>
         </div>
     </div>
 
