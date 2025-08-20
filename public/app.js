@@ -39,6 +39,7 @@ class VoiceHooksClient {
         this.selectedSessionId = null;
         this.systemInfo = null;
         this.activityFeed = [];
+        this.voiceFeedFilter = 'all'; // 'all', 'session', or specific sessionId
 
         // Speech recognition
         this.recognition = null;
@@ -47,6 +48,7 @@ class VoiceHooksClient {
         this.isPushToTalkEnabled = false;
         this.isPushToTalkKeyPressed = false;
         this.pushToTalkKeyCode = localStorage.getItem('pushToTalkKey') || 'Space';
+        this.isSendingMessage = false; // Flag to prevent duplicate text message submissions
         this.initializeSpeechRecognition();
 
         // Speech synthesis
@@ -61,7 +63,7 @@ class VoiceHooksClient {
         this.speechRateSlider = document.getElementById('speechRate');
         this.speechRateInput = document.getElementById('speechRateInput');
         this.testTTSBtn = document.getElementById('testTTSBtn');
-        this.voiceResponsesToggle = document.getElementById('voiceResponsesToggle');
+        // Voice responses are always enabled now
         this.voiceOptions = document.getElementById('voiceOptions');
         this.localVoicesGroup = document.getElementById('localVoicesGroup');
         this.cloudVoicesGroup = document.getElementById('cloudVoicesGroup');
@@ -292,15 +294,7 @@ class VoiceHooksClient {
             });
         }
 
-        // Voice toggle listeners
-        if (this.voiceResponsesToggle) {
-            this.voiceResponsesToggle.addEventListener('change', (e) => {
-                const enabled = e.target.checked;
-                localStorage.setItem('voiceResponsesEnabled', enabled);
-                this.updateVoicePreferences();
-                this.updateVoiceOptionsVisibility();
-            });
-        }
+        // Voice responses always enabled, no toggle needed
     }
 
 
@@ -349,7 +343,7 @@ class VoiceHooksClient {
 
     formatTimestamp(timestamp) {
         const date = new Date(timestamp);
-        return date.toLocaleTimeString();
+        return date.toLocaleString(); // Use full date and time with local timezone
     }
 
     escapeHtml(text) {
@@ -427,6 +421,13 @@ class VoiceHooksClient {
         const text = this.utteranceInput.value.trim();
         if (!text) return;
 
+        // Prevent duplicate submissions
+        if (this.isSendingMessage) {
+            this.debugLog('Already sending message, ignoring duplicate call');
+            return;
+        }
+
+        this.isSendingMessage = true;
         this.debugLog('Sending text message:', text);
 
         try {
@@ -434,6 +435,11 @@ class VoiceHooksClient {
             this.utteranceInput.value = ''; // Clear input after sending
         } catch (error) {
             console.error('Failed to send text message:', error);
+        } finally {
+            // Reset flag after a short delay to prevent rapid duplicate sends
+            setTimeout(() => {
+                this.isSendingMessage = false;
+            }, 100);
         }
     }
 
@@ -479,6 +485,10 @@ class VoiceHooksClient {
         const trimmedText = text.trim();
         if (!trimmedText) return;
 
+        // Console log for voice input
+        console.log(`🎤 [VOICE INPUT] "${trimmedText}"`);
+        console.log(`   📤 Sending to server...`);
+        
         this.debugLog('Sending voice utterance:', trimmedText);
 
         try {
@@ -494,9 +504,22 @@ class VoiceHooksClient {
             });
 
             if (response.ok) {
+                const data = await response.json();
+                
+                // Console log for successful voice input submission
+                if (data.success) {
+                    console.log(`   ✅ Voice input sent successfully`);
+                    if (data.sessionName) {
+                        console.log(`   📍 Routed to session: ${data.sessionName} (${data.sessionId})`);
+                    } else {
+                        console.log(`   📍 Routed to global queue`);
+                    }
+                }
+                
                 this.loadData(); // Refresh the list
             } else {
                 const error = await response.json();
+                console.log(`   ❌ Failed to send voice input:`, error);
                 console.error('Error sending voice utterance:', error);
             }
         } catch (error) {
@@ -551,8 +574,19 @@ class VoiceHooksClient {
         this.voices = [];
         const loadVoices = () => {
             this.voices = window.speechSynthesis.getVoices();
-            this.debugLog('Available voices:', this.voices);
-            this.populateVoiceList();
+            this.debugLog('Available voices loaded:', this.voices.length);
+            if (this.voices.length > 0) {
+                this.populateVoiceList();
+            } else {
+                // Retry after a short delay if no voices found
+                setTimeout(() => {
+                    this.voices = window.speechSynthesis.getVoices();
+                    this.debugLog('Retry - Available voices loaded:', this.voices.length);
+                    if (this.voices.length > 0) {
+                        this.populateVoiceList();
+                    }
+                }, 100);
+            }
         };
 
         // Load voices initially and on change
@@ -582,10 +616,14 @@ class VoiceHooksClient {
         this.webSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                console.log('🔊 [WEBSOCKET] Received message:', data);
                 this.debugLog('WebSocket Event:', data);
 
                 if (data.type === 'speak' && data.text) {
+                    console.log('🔊 [TTS] Processing speak event:', data.text);
                     this.handleUnifiedSpeakEvent(data);
+                } else {
+                    console.log('🔊 [WEBSOCKET] Non-speak message type:', data.type);
                 }
             } catch (error) {
                 console.error('Failed to parse WebSocket event:', error);
@@ -593,14 +631,17 @@ class VoiceHooksClient {
         };
 
         this.webSocket.onerror = (error) => {
+            console.log(`🔗 [WEBSOCKET] ❌ Connection error:`, error);
             console.error('WebSocket connection error:', error);
         };
 
         this.webSocket.onopen = () => {
+            console.log(`🔗 [WEBSOCKET] ✅ Connected to ${wsUrl}`);
             this.debugLog('WebSocket connected');
         };
 
         this.webSocket.onclose = () => {
+            console.log(`🔗 [WEBSOCKET] 🔄 Disconnected, attempting reconnect in 2s...`);
             this.debugLog('WebSocket disconnected, attempting reconnect...');
             // Reconnect after 2 seconds
             setTimeout(() => this.initializeWebSocket(), 2000);
@@ -640,7 +681,13 @@ class VoiceHooksClient {
     }
 
     populateLanguageFilter() {
-        if (!this.languageSelect || !this.voices) return;
+        if (!this.languageSelect) return;
+        
+        if (!this.voices || this.voices.length === 0) {
+            // Show loading state
+            this.languageSelect.innerHTML = '<option value="">Loading languages...</option>';
+            return;
+        }
 
         // Get saved selection first, then current selection
         const currentSelection = this.savedLanguage || this.languageSelect.value || 'en-US';
@@ -822,14 +869,16 @@ class VoiceHooksClient {
     }
 
     async speakText(text) {
+        console.log('🔊 [TTS] speakText called with:', text);
         // Always use browser voice (Web Speech API)
         {
             // Use browser voice
             if (!window.speechSynthesis) {
-                console.error('Speech synthesis not available');
+                console.error('🔊 [TTS] Speech synthesis not available');
                 return;
             }
 
+            console.log('🔊 [TTS] Speech synthesis available, proceeding...');
             // Cancel any ongoing speech
             window.speechSynthesis.cancel();
 
@@ -868,23 +917,13 @@ class VoiceHooksClient {
             };
 
             // Speak the text
+            console.log('🔊 [TTS] Calling speechSynthesis.speak()');
             window.speechSynthesis.speak(utterance);
         }
     }
 
     loadPreferences() {
-        // Simple localStorage with defaults to true
-        const storedVoiceResponses = localStorage.getItem('voiceResponsesEnabled');
-
-        // Default to true if not stored
-        const voiceResponsesEnabled = storedVoiceResponses !== null
-            ? storedVoiceResponses === 'true'
-            : true;
-
-        // Set the checkbox
-        if (this.voiceResponsesToggle) {
-            this.voiceResponsesToggle.checked = voiceResponsesEnabled;
-        }
+        // Voice responses are always enabled now
 
         // Load push-to-talk preferences
         if (this.pushToTalkToggle) {
@@ -894,10 +933,7 @@ class VoiceHooksClient {
             this.pushToTalkKey.value = this.pushToTalkKeyCode;
         }
 
-        // Save to localStorage if this is first time
-        if (storedVoiceResponses === null) {
-            localStorage.setItem('voiceResponsesEnabled', 'true');
-        }
+        // Voice responses always enabled
 
         // Load voice settings
         const storedRate = localStorage.getItem('speechRate');
@@ -928,14 +964,14 @@ class VoiceHooksClient {
     }
 
     updateVoiceOptionsVisibility() {
-        if (this.voiceResponsesToggle && this.voiceOptions) {
-            const voiceResponsesEnabled = this.voiceResponsesToggle.checked;
-            this.voiceOptions.style.display = voiceResponsesEnabled ? 'flex' : 'none';
+        // Voice options always visible now
+        if (this.voiceOptions) {
+            this.voiceOptions.style.display = 'flex';
         }
     }
 
     async updateVoicePreferences() {
-        const voiceResponsesEnabled = this.voiceResponsesToggle ? this.voiceResponsesToggle.checked : true;
+        const voiceResponsesEnabled = true; // Always enabled
 
         try {
             // Send preferences to server
@@ -1047,16 +1083,27 @@ class VoiceHooksClient {
     handleUnifiedSpeakEvent(data) {
         const { text, sessionId, sessionName, instanceUrl } = data;
         
+        // Console log for speak event
+        console.log(`🗣️ [SPEAK EVENT] "${text}"`);
+        if (sessionName && instanceUrl) {
+            console.log(`   📍 Session: ${sessionName} (${sessionId})`);
+            console.log(`   🌐 Instance: ${instanceUrl}`);
+        } else if (sessionName) {
+            console.log(`   📍 Session: ${sessionName} (${sessionId})`);
+        } else {
+            console.log(`   📍 No session information`);
+        }
+        
         // Show which session is speaking in the sessions grid with instance info
         this.highlightSpeakingSession(sessionId, sessionName, instanceUrl);
         
-        // Show in unified voice feed
+        // Show in voice feed (filtered by current selection)
         this.addToVoiceFeed(data);
         
         // Speak the text
         this.speakText(text);
         
-        // Log session and instance information
+        // Log session and instance information (existing debug log)
         if (sessionName && instanceUrl) {
             this.debugLog(`Speaking from ${sessionName} (${sessionId}) on ${instanceUrl}`);
         } else if (sessionName) {
@@ -1076,7 +1123,7 @@ class VoiceHooksClient {
             sessionName: sessionName || 'Unknown Session',
             instanceUrl: instanceUrl || 'Unknown Instance',
             timestamp: at || Date.now(),
-            displayTime: new Date().toLocaleTimeString()
+            displayTime: new Date().toLocaleString()
         };
         
         // Add to feed and maintain max items
@@ -1085,7 +1132,7 @@ class VoiceHooksClient {
             this.voiceFeed = this.voiceFeed.slice(0, this.maxFeedItems);
         }
         
-        // Update voice feed display
+        // Update voice feed display (will respect current filter)
         this.updateVoiceFeedDisplay();
         
         this.debugLog('Added to voice feed:', feedItem);
@@ -1102,12 +1149,24 @@ class VoiceHooksClient {
         const feedList = document.getElementById('voiceFeedList');
         if (!feedList) return;
 
-        if (this.voiceFeed.length === 0) {
-            feedList.innerHTML = '<div class="empty-state">No voice activity yet.</div>';
+        // Filter voice feed based on current filter
+        let filteredFeed = this.voiceFeed;
+        if (this.voiceFeedFilter === 'session' && this.selectedSessionId) {
+            filteredFeed = this.voiceFeed.filter(item => item.sessionId === this.selectedSessionId);
+        } else if (this.voiceFeedFilter !== 'all' && this.voiceFeedFilter !== 'session') {
+            // Filter by specific session ID
+            filteredFeed = this.voiceFeed.filter(item => item.sessionId === this.voiceFeedFilter);
+        }
+
+        if (filteredFeed.length === 0) {
+            const emptyMessage = this.voiceFeedFilter === 'all' 
+                ? 'No voice activity yet.' 
+                : `No voice activity for ${this.voiceFeedFilter === 'session' ? 'selected session' : 'this session'}.`;
+            feedList.innerHTML = `<div class="empty-state">${emptyMessage}</div>`;
             return;
         }
 
-        feedList.innerHTML = this.voiceFeed.map(item => `
+        feedList.innerHTML = filteredFeed.map(item => `
             <div class="voice-feed-item">
                 <div class="voice-feed-header">
                     <div class="voice-feed-session">
@@ -1131,8 +1190,14 @@ class VoiceHooksClient {
         const voiceFeedHTML = `
             <div id="voiceFeedContainer" class="section voice-feed-section">
                 <div class="header">
-                    <h2>🎤 Unified Voice Feed</h2>
-                    <button id="clearVoiceFeedBtn" class="btn secondary-btn">Clear Feed</button>
+                    <h2>🎤 Voice Feed</h2>
+                    <div class="voice-feed-controls">
+                        <select id="voiceFeedFilter" class="voice-feed-filter">
+                            <option value="all">All Sessions</option>
+                            <option value="session">Active Session Only</option>
+                        </select>
+                        <button id="clearVoiceFeedBtn" class="btn secondary-btn">Clear Feed</button>
+                    </div>
                 </div>
                 <div id="voiceFeedList" class="voice-feed-list">
                     <div class="empty-state">No voice activity yet.</div>
@@ -1153,6 +1218,19 @@ class VoiceHooksClient {
         if (clearBtn) {
             clearBtn.addEventListener('click', () => this.clearVoiceFeed());
         }
+
+        // Add event listener for filter dropdown
+        const filterSelect = document.getElementById('voiceFeedFilter');
+        if (filterSelect) {
+            // Set initial value
+            filterSelect.value = this.voiceFeedFilter;
+            
+            filterSelect.addEventListener('change', (e) => {
+                this.voiceFeedFilter = e.target.value;
+                this.updateVoiceFeedDisplay();
+                this.debugLog(`Voice feed filter changed to: ${this.voiceFeedFilter}`);
+            });
+        }
     }
 
     clearVoiceFeed() {
@@ -1163,6 +1241,7 @@ class VoiceHooksClient {
 
     getSessionColor(sessionId) {
         // Generate consistent color for session ID
+        if (!sessionId) return 'hsl(0, 0%, 50%)'; // Default gray color for unknown sessions
         let hash = 0;
         for (let i = 0; i < sessionId.length; i++) {
             const char = sessionId.charCodeAt(i);
@@ -1223,6 +1302,24 @@ class VoiceHooksClient {
     }
 
     handleSessionUpdate(data) {
+        // Console log for session updates
+        console.log(`📋 [SESSION UPDATE] Received real-time update`);
+        console.log(`   📊 Total sessions: ${data.sessions.length}`);
+        console.log(`   ⚡ Active session: ${data.activeSessionId || 'None'}`);
+        console.log(`   🔍 Session data:`, JSON.stringify(data.sessions, null, 2));
+        if (data.summary) {
+            console.log(`   📈 Summary:`, data.summary);
+        }
+        
+        // Update selected session for voice feed filtering
+        const previousSelectedSessionId = this.selectedSessionId;
+        this.selectedSessionId = data.activeSessionId;
+        
+        // Update voice feed display if filter is set to 'session' and active session changed
+        if (this.voiceFeedFilter === 'session' && previousSelectedSessionId !== this.selectedSessionId) {
+            this.updateVoiceFeedDisplay();
+        }
+        
         // Update sessions grid without triggering a new API call
         this.renderSessions(data.sessions, data.activeSessionId);
         this.debugLog('Real-time session update received:', data.summary);
@@ -1245,12 +1342,17 @@ class VoiceHooksClient {
     }
 
     renderSessions(sessions, activeSessionId) {
+        console.log(`🎨 [RENDER] Rendering sessions:`, sessions);
+        console.log(`🎨 [RENDER] Active session ID:`, activeSessionId);
+        console.log(`🎨 [RENDER] Sessions grid element:`, this.sessionsGrid);
+        
         if (!sessions || sessions.length === 0) {
             this.sessionsGrid.innerHTML = '<div class="empty-state">No sessions detected. Start Claude Code in any project to see sessions here.</div>';
             return;
         }
 
         const sessionCards = sessions.map(session => this.createSessionCard(session, activeSessionId === session.id));
+        console.log(`🎨 [RENDER] Generated session cards:`, sessionCards);
         this.sessionsGrid.innerHTML = sessionCards.join('');
 
         // Add event listeners to session cards
@@ -1315,20 +1417,35 @@ class VoiceHooksClient {
     }
 
     async activateSession(sessionId) {
+        console.log(`🔄 [SESSION] Activating session: ${sessionId}`);
+        
         try {
             const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/activate`, {
                 method: 'POST'
             });
 
             if (response.ok) {
+                const data = await response.json();
+                console.log(`   ✅ Session activated successfully`);
                 this.debugLog(`Activated session: ${sessionId}`);
+                
+                // Update selected session for voice feed filtering
+                this.selectedSessionId = sessionId;
+                
+                // Update voice feed display if filter is set to 'session'
+                if (this.voiceFeedFilter === 'session') {
+                    this.updateVoiceFeedDisplay();
+                }
+                
                 // Reload sessions to update the UI
                 this.loadSessions();
             } else {
                 const error = await response.json();
+                console.log(`   ❌ Failed to activate session:`, error);
                 console.error('Failed to activate session:', error);
             }
         } catch (error) {
+            console.log(`   ❌ Error activating session:`, error);
             console.error('Error activating session:', error);
         }
     }
@@ -1338,21 +1455,27 @@ class VoiceHooksClient {
             return;
         }
 
+        console.log(`🗑️ [SESSION] Clearing utterances for session: ${sessionId}`);
+
         try {
             const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/utterances/clear`, {
                 method: 'POST'
             });
 
             if (response.ok) {
+                const data = await response.json();
+                console.log(`   ✅ Cleared ${data.clearedCount || 0} utterances`);
                 this.debugLog(`Cleared utterances for session: ${sessionId}`);
                 // Reload sessions and utterances to update the UI
                 this.loadSessions();
                 this.loadData();
             } else {
                 const error = await response.json();
+                console.log(`   ❌ Failed to clear utterances:`, error);
                 console.error('Failed to clear session utterances:', error);
             }
         } catch (error) {
+            console.log(`   ❌ Error clearing utterances:`, error);
             console.error('Error clearing session utterances:', error);
         }
     }
@@ -1362,20 +1485,26 @@ class VoiceHooksClient {
             return;
         }
 
+        console.log(`🗑️ [SESSION] Removing session: ${sessionId}`);
+
         try {
             const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
                 method: 'DELETE'
             });
 
             if (response.ok) {
+                const data = await response.json();
+                console.log(`   ✅ Session removed successfully`);
                 this.debugLog(`Removed session: ${sessionId}`);
                 // Reload sessions to update the UI
                 this.loadSessions();
             } else {
                 const error = await response.json();
+                console.log(`   ❌ Failed to remove session:`, error);
                 console.error('Failed to remove session:', error);
             }
         } catch (error) {
+            console.log(`   ❌ Error removing session:`, error);
             console.error('Error removing session:', error);
         }
     }
@@ -1495,7 +1624,7 @@ class VoiceHooksClient {
                 <div class="activity-content">
                     <div class="activity-header">
                         <span class="activity-session">${activity.sessionName || 'Unknown Session'}</span>
-                        <span class="activity-time">${new Date(activity.timestamp).toLocaleTimeString()}</span>
+                        <span class="activity-time">${new Date(activity.timestamp).toLocaleString()}</span>
                     </div>
                     <div class="activity-text">${this.escapeHtml(activity.content)}</div>
                     <div class="activity-meta">

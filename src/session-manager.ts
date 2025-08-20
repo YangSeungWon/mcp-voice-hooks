@@ -25,12 +25,20 @@ export interface SessionData {
   transcriptPath?: string;
 }
 
+interface SessionManagerConfig {
+  instanceRole: 'primary' | 'secondary';
+  instanceUrl: string;
+  primaryUrl?: string;
+}
+
 export class SessionManager {
   private sessions = new Map<string, SessionInfo>();
   private activeSessionId: string | null = null;
   private changeCallback?: () => void;
+  private config?: SessionManagerConfig;
 
-  constructor() {
+  constructor(config?: SessionManagerConfig) {
+    this.config = config;
     // Clean up inactive sessions every 5 minutes
     setInterval(() => this.cleanupInactiveSessions(), 5 * 60 * 1000);
   }
@@ -88,6 +96,14 @@ export class SessionManager {
       }
       
       debugLog(`[SessionManager] Registered new session: ${sessionId} (${session.projectName || 'unknown project'})`);
+      
+      // If this is a secondary instance, also register with primary
+      if (this.config?.instanceRole === 'secondary' && this.config?.primaryUrl) {
+        this.registerWithPrimary(sessionData, sessionId).catch(error => {
+          console.error(`[SessionManager] Failed to register with primary:`, error);
+        });
+      }
+      
       this.notifyChange();
     } else {
       // Update existing session
@@ -309,5 +325,45 @@ export class SessionManager {
     const activeSessions = sessions.filter(s => s.isActive);
     
     return `Sessions: ${sessions.length} total, ${activeSessions.length} active. Active session: ${this.activeSessionId || 'none'}`;
+  }
+
+  /**
+   * Register session with primary instance (Secondary instances only)
+   */
+  private async registerWithPrimary(sessionData: SessionData, sessionId: string): Promise<void> {
+    if (!this.config?.primaryUrl || !this.config?.instanceUrl) {
+      throw new Error('Primary URL and instance URL required for cross-instance registration');
+    }
+
+    const payload = {
+      sessionData: {
+        ...sessionData,
+        sessionId // Include the generated session ID
+      },
+      instanceUrl: this.config.instanceUrl
+    };
+
+    debugLog(`[SessionManager] Registering session ${sessionId} with primary at ${this.config.primaryUrl}`);
+
+    try {
+      const response = await fetch(`${this.config.primaryUrl}/api/sessions/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const result = await response.json();
+      debugLog(`[SessionManager] Successfully registered with primary: ${result.message}`);
+    } catch (error) {
+      debugLog(`[SessionManager] Failed to register with primary: ${error}`);
+      throw error;
+    }
   }
 }

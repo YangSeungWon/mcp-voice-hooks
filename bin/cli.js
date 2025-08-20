@@ -110,7 +110,7 @@ async function configureClaudeCodeSettings() {
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/stop\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
+            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/stop\" -H 'Content-Type: application/json' -d \"$CLAUDE_HOOK_REQUEST_BODY\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
           }
         ]
       }
@@ -121,7 +121,7 @@ async function configureClaudeCodeSettings() {
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/pre-tool\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
+            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/pre-tool\" -H 'Content-Type: application/json' -d \"$CLAUDE_HOOK_REQUEST_BODY\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
           }
         ]
       },
@@ -130,7 +130,12 @@ async function configureClaudeCodeSettings() {
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/pre-speak\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
+            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/pre-speak\" -H 'Content-Type: application/json' -d \"$CLAUDE_HOOK_REQUEST_BODY\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
+          },
+          {
+            "type": "command",
+            "when": "after",
+            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/post-speak\" -H 'Content-Type: application/json' -d \"$CLAUDE_HOOK_REQUEST_BODY\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
           }
         ]
       },
@@ -139,7 +144,7 @@ async function configureClaudeCodeSettings() {
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/pre-wait\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
+            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/pre-wait\" -H 'Content-Type: application/json' -d \"$CLAUDE_HOOK_REQUEST_BODY\" || echo '{\"decision\": \"approve\", \"reason\": \"voice-hooks unavailable\"}'"
           }
         ]
       }
@@ -150,7 +155,7 @@ async function configureClaudeCodeSettings() {
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/post-tool\" || echo '{}'"
+            "command": "curl -s -X POST \"http://localhost:${MCP_VOICE_HOOKS_PORT:-5111}/api/hooks/post-tool\" -H 'Content-Type: application/json' -d \"$CLAUDE_HOOK_REQUEST_BODY\" || echo '{}'"
           }
         ]
       }
