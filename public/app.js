@@ -10,16 +10,43 @@ class VoiceHooksClient {
         // Session management elements
         this.refreshSessionsBtn = document.getElementById('refreshSessionsBtn');
         this.sessionsGrid = document.getElementById('sessionsGrid');
+        
+        // Dashboard elements
+        this.systemStatsFooter = document.getElementById('systemStatsFooter');
+        this.activityFeedList = document.getElementById('activityFeedList');
+        this.voiceSection = document.getElementById('voiceSection');
+        this.voiceSettingsBtn = document.getElementById('voiceSettingsBtn');
+        this.hideVoiceBtn = document.getElementById('hideVoiceBtn');
+        this.refreshActivityBtn = document.getElementById('refreshActivityBtn');
 
         // Voice controls
         this.listenBtn = document.getElementById('listenBtn');
         this.listenBtnText = document.getElementById('listenBtnText');
         this.listeningIndicator = document.getElementById('listeningIndicator');
         this.interimText = document.getElementById('interimText');
+        this.pushToTalkToggle = document.getElementById('pushToTalkToggle');
+        this.pushToTalkKey = document.getElementById('pushToTalkKey');
+        this.pushToTalkStatus = document.getElementById('pushToTalkStatus');
+        this.pushToTalkStatusText = document.getElementById('pushToTalkStatusText');
+        this.utteranceInput = document.getElementById('utteranceInput');
+        this.sendBtn = document.getElementById('sendBtn');
+
+        // Unified voice feed
+        this.voiceFeed = [];
+        this.maxFeedItems = 50;
+
+        // Session management
+        this.selectedSessionId = null;
+        this.systemInfo = null;
+        this.activityFeed = [];
 
         // Speech recognition
         this.recognition = null;
         this.isListening = false;
+        this.isPushToTalkMode = localStorage.getItem('pushToTalkMode') === 'true' || false;
+        this.isPushToTalkEnabled = false;
+        this.isPushToTalkKeyPressed = false;
+        this.pushToTalkKeyCode = localStorage.getItem('pushToTalkKey') || 'Space';
         this.initializeSpeechRecognition();
 
         // Speech synthesis
@@ -45,14 +72,21 @@ class VoiceHooksClient {
         this.loadPreferences();
 
         this.setupEventListeners();
+        this.setupDashboardEventListeners();
+        this.setupKeyboardEventListeners();
         this.loadData();
         this.loadSessions();
+        this.loadSystemInfo();
+        this.loadActivityFeed();
+        this.renderSystemStats();
 
         // Auto-refresh every 2 seconds
         setInterval(() => {
             this.loadData();
             this.loadSessions();
-        }, 2000);
+            this.loadSystemInfo();
+            this.loadActivityFeed();
+        }, 5000);
     }
 
     initializeSpeechRecognition() {
@@ -127,63 +161,146 @@ class VoiceHooksClient {
         };
     }
 
+    setupKeyboardEventListeners() {
+        // Push-to-talk with configurable key
+        document.addEventListener('keydown', (event) => {
+            // Only handle configured key in push-to-talk mode when enabled and if not typing in input field
+            if (this.isPushToTalkMode && this.isPushToTalkEnabled && event.code === this.pushToTalkKeyCode && !this.isTypingInInputField(event.target)) {
+                event.preventDefault();
+                if (!this.isPushToTalkKeyPressed && !this.isListening) {
+                    this.isPushToTalkKeyPressed = true;
+                    this.updatePushToTalkStatus('🎤 Listening...');
+                    this.startListening();
+                    this.interimText.textContent = `Hold ${this.getKeyName()} and speak...`;
+                    this.interimText.classList.add('active');
+                }
+            }
+        });
+
+        document.addEventListener('keyup', (event) => {
+            if (this.isPushToTalkMode && this.isPushToTalkEnabled && event.code === this.pushToTalkKeyCode) {
+                event.preventDefault();
+                if (this.isPushToTalkKeyPressed && this.isListening) {
+                    this.isPushToTalkKeyPressed = false;
+                    this.updatePushToTalkStatus('Ready - Hold key to talk');
+                    this.stopListening();
+                }
+            }
+        });
+    }
+
+    isTypingInInputField(target) {
+        return target && (
+            target.tagName === 'INPUT' || 
+            target.tagName === 'TEXTAREA' ||
+            target.contentEditable === 'true' ||
+            target.id === 'utteranceInput'
+        );
+    }
+
     setupEventListeners() {
-        this.refreshBtn.addEventListener('click', () => this.loadData());
-        this.clearAllBtn.addEventListener('click', () => this.clearAllUtterances());
-        this.listenBtn.addEventListener('click', () => this.toggleListening());
+        if (this.refreshBtn) this.refreshBtn.addEventListener('click', () => this.loadData());
+        if (this.clearAllBtn) this.clearAllBtn.addEventListener('click', () => this.clearAllUtterances());
+        if (this.listenBtn) this.listenBtn.addEventListener('click', () => this.toggleListening());
+
+        // Push-to-talk toggle
+        if (this.pushToTalkToggle) {
+            this.pushToTalkToggle.addEventListener('change', (e) => {
+                this.isPushToTalkMode = e.target.checked;
+                localStorage.setItem('pushToTalkMode', this.isPushToTalkMode);
+                this.updateListenButtonText();
+                this.updatePushToTalkUI();
+                
+                // Stop listening if currently listening in push-to-talk mode
+                if (this.isPushToTalkMode && this.isListening) {
+                    this.stopListening();
+                }
+            });
+        }
+
+        // Push-to-talk key selection
+        if (this.pushToTalkKey) {
+            this.pushToTalkKey.addEventListener('change', (e) => {
+                this.pushToTalkKeyCode = e.target.value;
+                localStorage.setItem('pushToTalkKey', this.pushToTalkKeyCode);
+                this.updatePushToTalkStatus(`Ready - Hold ${this.getKeyName()} to talk`);
+            });
+        }
+
+        // Text input
+        if (this.sendBtn) this.sendBtn.addEventListener('click', () => this.sendTextMessage());
+        if (this.utteranceInput) {
+            this.utteranceInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.sendTextMessage();
+                }
+            });
+        }
         
         // Session management event listeners
-        this.refreshSessionsBtn.addEventListener('click', () => this.loadSessions());
+        if (this.refreshSessionsBtn) this.refreshSessionsBtn.addEventListener('click', () => this.loadSessions());
 
         // Language filter
         if (this.languageSelect) {
             this.languageSelect.addEventListener('change', () => {
                 // Save language preference
-                localStorage.setItem('selectedLanguage', this.languageSelect.value);
+                this.savedLanguage = this.languageSelect.value;
+                localStorage.setItem('selectedLanguage', this.savedLanguage);
                 // Repopulate voice list with filtered voices
                 this.populateVoiceList();
             });
         }
 
         // TTS controls
-        this.voiceSelect.addEventListener('change', (e) => {
-            this.selectedVoice = e.target.value;
-            // Save selected voice to localStorage
-            localStorage.setItem('selectedVoice', this.selectedVoice);
-            this.updateVoicePreferences();
-            this.updateVoiceWarnings();
-        });
+        if (this.voiceSelect) {
+            this.voiceSelect.addEventListener('change', (e) => {
+                this.selectedVoice = e.target.value;
+                // Save selected voice to localStorage
+                localStorage.setItem('selectedVoice', this.selectedVoice);
+                this.updateVoicePreferences();
+                this.updateVoiceWarnings();
+            });
+        }
 
-        this.speechRateSlider.addEventListener('input', (e) => {
-            this.speechRate = parseFloat(e.target.value);
-            this.speechRateInput.value = this.speechRate.toFixed(1);
-            // Save rate to localStorage
-            localStorage.setItem('speechRate', this.speechRate.toString());
-        });
-
-        this.speechRateInput.addEventListener('input', (e) => {
-            let value = parseFloat(e.target.value);
-            if (!isNaN(value)) {
-                value = Math.max(0.5, Math.min(5, value)); // Clamp to valid range
-                this.speechRate = value;
-                this.speechRateSlider.value = value.toString();
-                this.speechRateInput.value = value.toFixed(1);
+        if (this.speechRateSlider) {
+            this.speechRateSlider.addEventListener('input', (e) => {
+                this.speechRate = parseFloat(e.target.value);
+                if (this.speechRateInput) this.speechRateInput.value = this.speechRate.toFixed(1);
                 // Save rate to localStorage
                 localStorage.setItem('speechRate', this.speechRate.toString());
-            }
-        });
+            });
+        }
 
-        this.testTTSBtn.addEventListener('click', () => {
-            this.speakText('This is Voice Mode for Claude Code. How can I help you today?');
-        });
+        if (this.speechRateInput) {
+            this.speechRateInput.addEventListener('input', (e) => {
+                let value = parseFloat(e.target.value);
+                if (!isNaN(value)) {
+                    value = Math.max(0.5, Math.min(5, value)); // Clamp to valid range
+                    this.speechRate = value;
+                    if (this.speechRateSlider) this.speechRateSlider.value = value.toString();
+                    this.speechRateInput.value = value.toFixed(1);
+                    // Save rate to localStorage
+                    localStorage.setItem('speechRate', this.speechRate.toString());
+                }
+            });
+        }
+
+        if (this.testTTSBtn) {
+            this.testTTSBtn.addEventListener('click', () => {
+                this.speakText('This is Voice Mode for Claude Code. How can I help you today?');
+            });
+        }
 
         // Voice toggle listeners
-        this.voiceResponsesToggle.addEventListener('change', (e) => {
-            const enabled = e.target.checked;
-            localStorage.setItem('voiceResponsesEnabled', enabled);
-            this.updateVoicePreferences();
-            this.updateVoiceOptionsVisibility();
-        });
+        if (this.voiceResponsesToggle) {
+            this.voiceResponsesToggle.addEventListener('change', (e) => {
+                const enabled = e.target.checked;
+                localStorage.setItem('voiceResponsesEnabled', enabled);
+                this.updateVoicePreferences();
+                this.updateVoiceOptionsVisibility();
+            });
+        }
     }
 
 
@@ -242,10 +359,81 @@ class VoiceHooksClient {
     }
 
     toggleListening() {
-        if (this.isListening) {
-            this.stopListening();
+        if (this.isPushToTalkMode) {
+            // In push-to-talk mode, toggle between enabled/disabled state
+            this.isPushToTalkEnabled = !this.isPushToTalkEnabled;
+            this.updateListenButtonText();
+            
+            // If disabling push-to-talk while listening, stop listening
+            if (!this.isPushToTalkEnabled && this.isListening) {
+                this.stopListening();
+            }
         } else {
-            this.startListening();
+            // In normal mode, toggle listening
+            if (this.isListening) {
+                this.stopListening();
+            } else {
+                this.startListening();
+            }
+        }
+    }
+
+    updateListenButtonText() {
+        if (this.isPushToTalkMode) {
+            if (this.isPushToTalkEnabled) {
+                this.listenBtnText.textContent = `Push-to-Talk Ready (Hold ${this.getKeyName()})`;
+                this.listenBtn.style.background = '#28A745';
+            } else {
+                this.listenBtnText.textContent = 'Enable Push-to-Talk';
+                this.listenBtn.style.background = '#6C757D';
+            }
+        } else {
+            if (this.isListening) {
+                this.listenBtnText.textContent = 'Stop Listening';
+                this.listenBtn.style.background = '#DC3545';
+            } else {
+                this.listenBtnText.textContent = 'Start Listening';
+                this.listenBtn.style.background = '#28A745';
+            }
+        }
+    }
+
+    getKeyName() {
+        const keyMap = {
+            'Space': 'Space',
+            'KeyT': 'T',
+            'KeyV': 'V', 
+            'KeyB': 'B'
+        };
+        return keyMap[this.pushToTalkKeyCode] || this.pushToTalkKeyCode;
+    }
+
+    updatePushToTalkStatus(message) {
+        if (this.pushToTalkStatusText) {
+            this.pushToTalkStatusText.textContent = message;
+        }
+    }
+
+    updatePushToTalkUI() {
+        if (this.isPushToTalkMode && this.isPushToTalkEnabled) {
+            this.pushToTalkStatus.style.display = 'block';
+            this.updatePushToTalkStatus(`Ready - Hold ${this.getKeyName()} to talk`);
+        } else {
+            this.pushToTalkStatus.style.display = 'none';
+        }
+    }
+
+    async sendTextMessage() {
+        const text = this.utteranceInput.value.trim();
+        if (!text) return;
+
+        this.debugLog('Sending text message:', text);
+
+        try {
+            await this.sendVoiceUtterance(text);
+            this.utteranceInput.value = ''; // Clear input after sending
+        } catch (error) {
+            console.error('Failed to send text message:', error);
         }
     }
 
@@ -376,27 +564,66 @@ class VoiceHooksClient {
         // Set default voice preferences
         this.speechRate = 1.0;
         this.speechPitch = 1.0;
-        this.selectedVoice = 'system';
+        this.selectedVoice = localStorage.getItem('selectedVoice') || 'system';
     }
 
     initializeTTSEvents() {
-        // Connect to Server-Sent Events endpoint
+        // Initialize both WebSocket (for unified speak events) and SSE (for other events)
+        this.initializeWebSocket();
+        this.initializeSSE();
+    }
+
+    initializeWebSocket() {
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        
+        this.webSocket = new WebSocket(wsUrl);
+
+        this.webSocket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                this.debugLog('WebSocket Event:', data);
+
+                if (data.type === 'speak' && data.text) {
+                    this.handleUnifiedSpeakEvent(data);
+                }
+            } catch (error) {
+                console.error('Failed to parse WebSocket event:', error);
+            }
+        };
+
+        this.webSocket.onerror = (error) => {
+            console.error('WebSocket connection error:', error);
+        };
+
+        this.webSocket.onopen = () => {
+            this.debugLog('WebSocket connected');
+        };
+
+        this.webSocket.onclose = () => {
+            this.debugLog('WebSocket disconnected, attempting reconnect...');
+            // Reconnect after 2 seconds
+            setTimeout(() => this.initializeWebSocket(), 2000);
+        };
+    }
+
+    initializeSSE() {
+        // Connect to Server-Sent Events endpoint for other events (waitStatus, sessionUpdate)
         this.eventSource = new EventSource(`${this.baseUrl}/api/tts-events`);
 
         this.eventSource.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                this.debugLog('TTS Event:', data);
+                this.debugLog('SSE Event:', data);
 
-                if (data.type === 'speak' && data.text) {
-                    this.handleSpeakEvent(data);
-                } else if (data.type === 'waitStatus') {
+                if (data.type === 'waitStatus') {
                     this.handleWaitStatus(data.isWaiting);
                 } else if (data.type === 'sessionUpdate') {
                     this.handleSessionUpdate(data);
                 }
+                // Note: 'speak' events now come through WebSocket
             } catch (error) {
-                console.error('Failed to parse TTS event:', error);
+                console.error('Failed to parse SSE event:', error);
             }
         };
 
@@ -406,7 +633,7 @@ class VoiceHooksClient {
         };
 
         this.eventSource.onopen = () => {
-            this.debugLog('TTS Events connected');
+            this.debugLog('SSE Events connected');
             // Sync state when connection is established (includes reconnections)
             this.syncStateWithServer();
         };
@@ -415,8 +642,8 @@ class VoiceHooksClient {
     populateLanguageFilter() {
         if (!this.languageSelect || !this.voices) return;
 
-        // Get current selection
-        const currentSelection = this.languageSelect.value || 'en-US';
+        // Get saved selection first, then current selection
+        const currentSelection = this.savedLanguage || this.languageSelect.value || 'en-US';
 
         // Clear existing options
         this.languageSelect.innerHTML = '';
@@ -444,9 +671,16 @@ class VoiceHooksClient {
         // Restore selection
         this.languageSelect.value = currentSelection;
         if (this.languageSelect.value !== currentSelection) {
-            // If saved selection not available, default to en-US
+            // If saved selection not available, try en-US
             this.languageSelect.value = 'en-US';
+            if (this.languageSelect.value !== 'en-US') {
+                // If en-US also not available, use 'all'
+                this.languageSelect.value = 'all';
+            }
         }
+        
+        // Save the final selection to localStorage
+        localStorage.setItem('selectedLanguage', this.languageSelect.value);
     }
 
     populateVoiceList() {
@@ -527,73 +761,69 @@ class VoiceHooksClient {
         // Restore saved selection
         const savedVoice = localStorage.getItem('selectedVoice');
         if (savedVoice) {
-            this.voiceSelect.value = savedVoice;
-            this.selectedVoice = savedVoice;
-        } else {
-            // Look for Google US English Male voice first
-            let googleUSMaleIndex = -1;
-            let microsoftAndrewIndex = -1;
-
-            this.voices.forEach((voice, index) => {
-                const voiceName = voice.name.toLowerCase();
-
-                // Check for Google US English Male
-                if (voiceName.includes('google') &&
-                    voiceName.includes('us') &&
-                    voiceName.includes('english')) {
-                    googleUSMaleIndex = index;
-                }
-
-                // Check for Microsoft Andrew Online
-                if (voiceName.includes('microsoft') &&
-                    voiceName.includes('andrew') &&
-                    voiceName.includes('online')) {
-                    microsoftAndrewIndex = index;
-                }
-            });
-
-            if (googleUSMaleIndex !== -1) {
-                this.selectedVoice = `browser:${googleUSMaleIndex}`;
-                this.voiceSelect.value = this.selectedVoice;
-                this.debugLog('Defaulting to Google US English Male voice');
-            } else if (microsoftAndrewIndex !== -1) {
-                this.selectedVoice = `browser:${microsoftAndrewIndex}`;
-                this.voiceSelect.value = this.selectedVoice;
-                this.debugLog('Google US English Male not found, defaulting to Microsoft Andrew Online');
+            // Check if saved voice is still available
+            const voiceOption = this.voiceSelect.querySelector(`option[value="${savedVoice}"]`);
+            if (voiceOption) {
+                this.voiceSelect.value = savedVoice;
+                this.selectedVoice = savedVoice;
+                this.debugLog('Restored saved voice:', savedVoice);
             } else {
-                this.selectedVoice = 'system';
-                this.debugLog('Preferred voices not found, using system default');
+                // Saved voice not available anymore, find best alternative
+                this.selectBestAvailableVoice();
             }
+        } else {
+            // No saved voice, select best available
+            this.selectBestAvailableVoice();
         }
+        
+        // Always save the final selection
+        localStorage.setItem('selectedVoice', this.selectedVoice);
 
         // Update warnings based on selected voice
         this.updateVoiceWarnings();
     }
 
-    async speakText(text) {
-        // Check if we should use system voice
-        if (this.selectedVoice === 'system') {
-            // Use Mac system voice via server
-            try {
-                const response = await fetch(`${this.baseUrl}/api/speak-system`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        text: text,
-                        rate: Math.round(this.speechRate * 150) // Convert rate to words per minute
-                    }),
-                });
+    selectBestAvailableVoice() {
+        // Look for Google US English Male voice first
+        let googleUSMaleIndex = -1;
+        let microsoftAndrewIndex = -1;
 
-                if (!response.ok) {
-                    const error = await response.json();
-                    console.error('Failed to speak via system voice:', error);
-                }
-            } catch (error) {
-                console.error('Failed to call speak-system API:', error);
+        this.voices.forEach((voice, index) => {
+            const voiceName = voice.name.toLowerCase();
+
+            // Check for Google US English Male
+            if (voiceName.includes('google') &&
+                voiceName.includes('us') &&
+                voiceName.includes('english')) {
+                googleUSMaleIndex = index;
             }
+
+            // Check for Microsoft Andrew Online
+            if (voiceName.includes('microsoft') &&
+                voiceName.includes('andrew') &&
+                voiceName.includes('online')) {
+                microsoftAndrewIndex = index;
+            }
+        });
+
+        if (googleUSMaleIndex !== -1) {
+            this.selectedVoice = `browser:${googleUSMaleIndex}`;
+            this.voiceSelect.value = this.selectedVoice;
+            this.debugLog('Defaulting to Google US English Male voice');
+        } else if (microsoftAndrewIndex !== -1) {
+            this.selectedVoice = `browser:${microsoftAndrewIndex}`;
+            this.voiceSelect.value = this.selectedVoice;
+            this.debugLog('Google US English Male not found, defaulting to Microsoft Andrew Online');
         } else {
+            this.selectedVoice = 'system';
+            this.voiceSelect.value = this.selectedVoice;
+            this.debugLog('Preferred voices not found, using system default');
+        }
+    }
+
+    async speakText(text) {
+        // Always use browser voice (Web Speech API)
+        {
             // Use browser voice
             if (!window.speechSynthesis) {
                 console.error('Speech synthesis not available');
@@ -606,11 +836,17 @@ class VoiceHooksClient {
             // Create utterance
             const utterance = new SpeechSynthesisUtterance(text);
 
-            // Set voice if using browser voice
+            // Set voice - use selected voice or find preferred voice
             if (this.selectedVoice && this.selectedVoice.startsWith('browser:')) {
                 const voiceIndex = parseInt(this.selectedVoice.substring(8));
                 if (this.voices[voiceIndex]) {
                     utterance.voice = this.voices[voiceIndex];
+                }
+            } else {
+                // Find preferred voice based on language setting
+                const preferredVoice = this.findPreferredVoice();
+                if (preferredVoice) {
+                    utterance.voice = preferredVoice;
                 }
             }
 
@@ -646,7 +882,17 @@ class VoiceHooksClient {
             : true;
 
         // Set the checkbox
-        this.voiceResponsesToggle.checked = voiceResponsesEnabled;
+        if (this.voiceResponsesToggle) {
+            this.voiceResponsesToggle.checked = voiceResponsesEnabled;
+        }
+
+        // Load push-to-talk preferences
+        if (this.pushToTalkToggle) {
+            this.pushToTalkToggle.checked = this.isPushToTalkMode;
+        }
+        if (this.pushToTalkKey) {
+            this.pushToTalkKey.value = this.pushToTalkKeyCode;
+        }
 
         // Save to localStorage if this is first time
         if (storedVoiceResponses === null) {
@@ -657,18 +903,15 @@ class VoiceHooksClient {
         const storedRate = localStorage.getItem('speechRate');
         if (storedRate !== null) {
             this.speechRate = parseFloat(storedRate);
-            this.speechRateSlider.value = storedRate;
-            this.speechRateInput.value = this.speechRate.toFixed(1);
+            if (this.speechRateSlider) this.speechRateSlider.value = storedRate;
+            if (this.speechRateInput) this.speechRateInput.value = this.speechRate.toFixed(1);
         }
 
         // Load selected voice (will be applied after voices load)
         this.selectedVoice = localStorage.getItem('selectedVoice') || 'system';
 
-        // Load selected language
-        const savedLanguage = localStorage.getItem('selectedLanguage');
-        if (savedLanguage && this.languageSelect) {
-            this.languageSelect.value = savedLanguage;
-        }
+        // Load selected language - will be applied when populateLanguageFilter is called
+        this.savedLanguage = localStorage.getItem('selectedLanguage') || 'en-US';
 
         // Update UI visibility
         this.updateVoiceOptionsVisibility();
@@ -678,15 +921,21 @@ class VoiceHooksClient {
 
         // Update warnings after preferences are loaded
         this.updateVoiceWarnings();
+
+        // Update button text and UI based on mode
+        this.updateListenButtonText();
+        this.updatePushToTalkUI();
     }
 
     updateVoiceOptionsVisibility() {
-        const voiceResponsesEnabled = this.voiceResponsesToggle.checked;
-        this.voiceOptions.style.display = voiceResponsesEnabled ? 'flex' : 'none';
+        if (this.voiceResponsesToggle && this.voiceOptions) {
+            const voiceResponsesEnabled = this.voiceResponsesToggle.checked;
+            this.voiceOptions.style.display = voiceResponsesEnabled ? 'flex' : 'none';
+        }
     }
 
     async updateVoicePreferences() {
-        const voiceResponsesEnabled = this.voiceResponsesToggle.checked;
+        const voiceResponsesEnabled = this.voiceResponsesToggle ? this.voiceResponsesToggle.checked : true;
 
         try {
             // Send preferences to server
@@ -791,23 +1040,152 @@ class VoiceHooksClient {
     }
 
     handleSpeakEvent(data) {
-        const { text, sessionId, sessionName } = data;
+        // Legacy SSE speak event handler - kept for backward compatibility
+        this.handleUnifiedSpeakEvent(data);
+    }
+
+    handleUnifiedSpeakEvent(data) {
+        const { text, sessionId, sessionName, instanceUrl } = data;
         
-        // Show which session is speaking in the sessions grid
-        this.highlightSpeakingSession(sessionId, sessionName);
+        // Show which session is speaking in the sessions grid with instance info
+        this.highlightSpeakingSession(sessionId, sessionName, instanceUrl);
+        
+        // Show in unified voice feed
+        this.addToVoiceFeed(data);
         
         // Speak the text
         this.speakText(text);
         
-        // Log session information
-        if (sessionName) {
+        // Log session and instance information
+        if (sessionName && instanceUrl) {
+            this.debugLog(`Speaking from ${sessionName} (${sessionId}) on ${instanceUrl}`);
+        } else if (sessionName) {
             this.debugLog(`Speaking from session: ${sessionName} (${sessionId})`);
         } else {
             this.debugLog(`Speaking (no session information)`);
         }
     }
 
-    highlightSpeakingSession(sessionId, sessionName) {
+    addToVoiceFeed(data) {
+        const { text, sessionId, sessionName, instanceUrl, at } = data;
+        
+        const feedItem = {
+            id: Date.now() + Math.random(),
+            text,
+            sessionId,
+            sessionName: sessionName || 'Unknown Session',
+            instanceUrl: instanceUrl || 'Unknown Instance',
+            timestamp: at || Date.now(),
+            displayTime: new Date().toLocaleTimeString()
+        };
+        
+        // Add to feed and maintain max items
+        this.voiceFeed.unshift(feedItem);
+        if (this.voiceFeed.length > this.maxFeedItems) {
+            this.voiceFeed = this.voiceFeed.slice(0, this.maxFeedItems);
+        }
+        
+        // Update voice feed display
+        this.updateVoiceFeedDisplay();
+        
+        this.debugLog('Added to voice feed:', feedItem);
+    }
+
+    updateVoiceFeedDisplay() {
+        // Create or get voice feed container
+        let voiceFeedContainer = document.getElementById('voiceFeedContainer');
+        if (!voiceFeedContainer) {
+            this.createVoiceFeedUI();
+            voiceFeedContainer = document.getElementById('voiceFeedContainer');
+        }
+
+        const feedList = document.getElementById('voiceFeedList');
+        if (!feedList) return;
+
+        if (this.voiceFeed.length === 0) {
+            feedList.innerHTML = '<div class="empty-state">No voice activity yet.</div>';
+            return;
+        }
+
+        feedList.innerHTML = this.voiceFeed.map(item => `
+            <div class="voice-feed-item">
+                <div class="voice-feed-header">
+                    <div class="voice-feed-session">
+                        <span class="session-badge" style="background-color: ${this.getSessionColor(item.sessionId)}">
+                            ${item.sessionName}
+                        </span>
+                        <span class="instance-badge">${this.getInstanceLabel(item.instanceUrl)}</span>
+                    </div>
+                    <div class="voice-feed-time">${item.displayTime}</div>
+                </div>
+                <div class="voice-feed-text">${this.escapeHtml(item.text)}</div>
+            </div>
+        `).join('');
+    }
+
+    createVoiceFeedUI() {
+        // Add voice feed section to the page
+        const container = document.querySelector('.container');
+        if (!container) return;
+
+        const voiceFeedHTML = `
+            <div id="voiceFeedContainer" class="section voice-feed-section">
+                <div class="header">
+                    <h2>🎤 Unified Voice Feed</h2>
+                    <button id="clearVoiceFeedBtn" class="btn secondary-btn">Clear Feed</button>
+                </div>
+                <div id="voiceFeedList" class="voice-feed-list">
+                    <div class="empty-state">No voice activity yet.</div>
+                </div>
+            </div>
+        `;
+
+        // Insert before sessions section
+        const sessionsSection = document.querySelector('.sessions-section');
+        if (sessionsSection) {
+            sessionsSection.insertAdjacentHTML('beforebegin', voiceFeedHTML);
+        } else {
+            container.insertAdjacentHTML('beforeend', voiceFeedHTML);
+        }
+
+        // Add event listener for clear button
+        const clearBtn = document.getElementById('clearVoiceFeedBtn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => this.clearVoiceFeed());
+        }
+    }
+
+    clearVoiceFeed() {
+        this.voiceFeed = [];
+        this.updateVoiceFeedDisplay();
+        this.debugLog('Voice feed cleared');
+    }
+
+    getSessionColor(sessionId) {
+        // Generate consistent color for session ID
+        let hash = 0;
+        for (let i = 0; i < sessionId.length; i++) {
+            const char = sessionId.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        
+        const hue = Math.abs(hash % 360);
+        return `hsl(${hue}, 70%, 50%)`;
+    }
+
+    getInstanceLabel(instanceUrl) {
+        if (!instanceUrl) return 'Unknown';
+        try {
+            const url = new URL(instanceUrl);
+            const port = url.port;
+            return port === '5111' ? 'Primary' : `Secondary:${port}`;
+        } catch {
+            return 'Unknown';
+        }
+    }
+
+    highlightSpeakingSession(sessionId, sessionName, instanceUrl) {
         // Remove previous speaking indicators
         this.sessionsGrid.querySelectorAll('.session-card').forEach(card => {
             card.classList.remove('speaking');
@@ -999,6 +1377,399 @@ class VoiceHooksClient {
             }
         } catch (error) {
             console.error('Error removing session:', error);
+        }
+    }
+
+    // New session management methods
+    async loadSystemInfo() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/system`);
+            if (response.ok) {
+                this.systemInfo = await response.json();
+                this.updateSystemInfoDisplay();
+            }
+        } catch (error) {
+            console.error('Failed to load system info:', error);
+        }
+    }
+
+    async loadActivityFeed() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/activity?limit=20`);
+            if (response.ok) {
+                const data = await response.json();
+                this.activityFeed = data.activities;
+                this.updateActivityFeedDisplay();
+            }
+        } catch (error) {
+            console.error('Failed to load activity feed:', error);
+        }
+    }
+
+    async loadSessionDetails(sessionId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/details`);
+            if (response.ok) {
+                return await response.json();
+            }
+        } catch (error) {
+            console.error('Failed to load session details:', error);
+        }
+        return null;
+    }
+
+    updateSystemInfoDisplay() {
+        if (!this.systemInfo) return;
+
+        // Create or update system info section
+        let systemInfoContainer = document.getElementById('systemInfoContainer');
+        if (!systemInfoContainer) {
+            this.createSystemInfoUI();
+            systemInfoContainer = document.getElementById('systemInfoContainer');
+        }
+
+        const { instance, sessions, voice, memory } = this.systemInfo;
+        
+        const systemInfoHTML = `
+            <div class="system-stats-grid">
+                <div class="system-stat-card">
+                    <div class="stat-icon">🖥️</div>
+                    <div class="stat-content">
+                        <div class="stat-label">Instance</div>
+                        <div class="stat-value">${instance.role.toUpperCase()}</div>
+                        <div class="stat-detail">Port ${instance.port} • PID ${instance.pid}</div>
+                    </div>
+                </div>
+                <div class="system-stat-card">
+                    <div class="stat-icon">📁</div>
+                    <div class="stat-content">
+                        <div class="stat-label">Sessions</div>
+                        <div class="stat-value">${sessions.active}/${sessions.total}</div>
+                        <div class="stat-detail">Active sessions</div>
+                    </div>
+                </div>
+                <div class="system-stat-card">
+                    <div class="stat-icon">🎤</div>
+                    <div class="stat-content">
+                        <div class="stat-label">Voice Clients</div>
+                        <div class="stat-value">${voice.activeClients}</div>
+                        <div class="stat-detail">Connected browsers</div>
+                    </div>
+                </div>
+                <div class="system-stat-card">
+                    <div class="stat-icon">💾</div>
+                    <div class="stat-content">
+                        <div class="stat-label">Memory</div>
+                        <div class="stat-value">${Math.round(memory.heapUsed / 1024 / 1024)}MB</div>
+                        <div class="stat-detail">Heap used</div>
+                    </div>
+                </div>
+            </div>
+            <div class="system-uptime">
+                <span>Uptime: ${this.formatUptime(instance.uptime)} • ${instance.nodeVersion} • ${instance.platform}</span>
+            </div>
+        `;
+
+        systemInfoContainer.innerHTML = systemInfoHTML;
+    }
+
+    updateActivityFeedDisplay() {
+        // Create or update activity feed section
+        let activityContainer = document.getElementById('activityFeedContainer');
+        if (!activityContainer) {
+            this.createActivityFeedUI();
+            activityContainer = document.getElementById('activityFeedContainer');
+        }
+
+        const feedList = document.getElementById('activityFeedList');
+        if (!feedList) return;
+
+        if (this.activityFeed.length === 0) {
+            feedList.innerHTML = '<div class="empty-state">No recent activity.</div>';
+            return;
+        }
+
+        feedList.innerHTML = this.activityFeed.map(activity => `
+            <div class="activity-feed-item">
+                <div class="activity-icon">${this.getActivityIcon(activity.type)}</div>
+                <div class="activity-content">
+                    <div class="activity-header">
+                        <span class="activity-session">${activity.sessionName || 'Unknown Session'}</span>
+                        <span class="activity-time">${new Date(activity.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="activity-text">${this.escapeHtml(activity.content)}</div>
+                    <div class="activity-meta">
+                        <span class="activity-type">${activity.type.replace('_', ' ')}</span>
+                        <span class="activity-status status-${activity.status}">${activity.status}</span>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    createSystemInfoUI() {
+        const container = document.querySelector('.container');
+        if (!container) return;
+
+        const systemInfoHTML = `
+            <div id="systemInfoContainer" class="section system-info-section">
+                <div class="header">
+                    <h2>📊 System Overview</h2>
+                </div>
+                <div class="system-info-content">
+                    <!-- Content will be populated by updateSystemInfoDisplay -->
+                </div>
+            </div>
+        `;
+
+        // Insert at the beginning
+        container.insertAdjacentHTML('afterbegin', systemInfoHTML);
+    }
+
+    createActivityFeedUI() {
+        const container = document.querySelector('.container');
+        if (!container) return;
+
+        const activityFeedHTML = `
+            <div id="activityFeedContainer" class="section activity-feed-section">
+                <div class="header">
+                    <h2>📋 Recent Activity</h2>
+                    <button id="refreshActivityBtn" class="btn secondary-btn">Refresh</button>
+                </div>
+                <div id="activityFeedList" class="activity-feed-list">
+                    <div class="empty-state">Loading activity...</div>
+                </div>
+            </div>
+        `;
+
+        // Insert before voice feed
+        const voiceFeedContainer = document.getElementById('voiceFeedContainer');
+        if (voiceFeedContainer) {
+            voiceFeedContainer.insertAdjacentHTML('beforebegin', activityFeedHTML);
+        } else {
+            // Insert before sessions section as fallback
+            const sessionsSection = document.querySelector('.sessions-section');
+            if (sessionsSection) {
+                sessionsSection.insertAdjacentHTML('beforebegin', activityFeedHTML);
+            }
+        }
+
+        // Add event listener
+        const refreshBtn = document.getElementById('refreshActivityBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => this.loadActivityFeed());
+        }
+    }
+
+    getActivityIcon(type) {
+        const icons = {
+            'voice_input': '🎤',
+            'tool_use': '🔧',
+            'session_start': '▶️',
+            'session_end': '⏹️',
+            'error': '❌'
+        };
+        return icons[type] || '📝';
+    }
+
+    formatUptime(seconds) {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = Math.floor(seconds % 60);
+        
+        if (hours > 0) {
+            return `${hours}h ${minutes}m`;
+        } else if (minutes > 0) {
+            return `${minutes}m ${secs}s`;
+        } else {
+            return `${secs}s`;
+        }
+    }
+
+    // Enhanced session card with more details
+    async createEnhancedSessionCard(session, isActive) {
+        const lastActivityTime = new Date(session.lastActivity).toLocaleString();
+        const statusClass = session.isActive ? 'active' : 'inactive';
+        const projectName = session.projectName || 'Unknown Project';
+        const projectPath = session.projectPath || 'Unknown Path';
+
+        // Try to get detailed session info
+        const details = await this.loadSessionDetails(session.id);
+        const gitInfo = details?.gitInfo;
+
+        return `
+            <div class="session-card enhanced ${statusClass} ${isActive ? 'selected' : ''}" data-session-id="${session.id}">
+                <div class="session-header">
+                    <h4 class="session-title">${projectName}</h4>
+                    ${gitInfo ? `
+                        <div class="git-info">
+                            <span class="git-branch">🌿 ${gitInfo.branch}</span>
+                            <span class="git-commit">${gitInfo.commit}</span>
+                            ${gitInfo.hasChanges ? '<span class="git-changes">⚠️</span>' : ''}
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="session-path">${projectPath}</div>
+                <div class="session-stats">
+                    <div class="session-stat">
+                        <div class="session-stat-icon stat-pending"></div>
+                        <span>${session.pendingUtterances} pending</span>
+                    </div>
+                    <div class="session-stat">
+                        <div class="session-stat-icon stat-total"></div>
+                        <span>${session.totalUtterances} total</span>
+                    </div>
+                    ${gitInfo && gitInfo.hasChanges ? `
+                        <div class="session-stat">
+                            <div class="session-stat-icon stat-changes"></div>
+                            <span>${gitInfo.changedFiles} changes</span>
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="session-activity">Last activity: ${lastActivityTime}</div>
+                <div class="session-actions">
+                    <button class="session-btn" data-action="details">Details</button>
+                    <button class="session-btn" data-action="clear">Clear Utterances</button>
+                    <button class="session-btn danger" data-action="remove">Remove</button>
+                </div>
+            </div>
+        `;
+    }
+
+    // Dashboard-specific event listeners
+    setupDashboardEventListeners() {
+        // Voice settings toggle
+        if (this.voiceSettingsBtn) {
+            this.voiceSettingsBtn.addEventListener('click', () => {
+                this.voiceSection.style.display = this.voiceSection.style.display === 'none' ? 'block' : 'none';
+            });
+        }
+
+        // Hide voice section
+        if (this.hideVoiceBtn) {
+            this.hideVoiceBtn.addEventListener('click', () => {
+                this.voiceSection.style.display = 'none';
+            });
+        }
+
+        // Activity refresh
+        if (this.refreshActivityBtn) {
+            this.refreshActivityBtn.addEventListener('click', () => {
+                this.loadActivityFeed();
+            });
+        }
+    }
+
+    // Render system stats
+    renderSystemStats() {
+        if (!this.systemInfo) return;
+
+        const stats = [
+            {
+                icon: '■',
+                label: 'role',
+                value: this.systemInfo.instance.role,
+                detail: `:${this.systemInfo.instance.port}`,
+                className: 'system'
+            },
+            {
+                icon: '▶',
+                label: 'sessions',
+                value: `${this.systemInfo.sessions.active}/${this.systemInfo.sessions.total}`,
+                detail: 'active',
+                className: 'sessions'
+            },
+            {
+                icon: '●',
+                label: 'voice',
+                value: this.systemInfo.voice.enabled ? 'enabled' : 'disabled',
+                detail: `${this.systemInfo.voice.activeClients}`,
+                className: 'voice'
+            },
+            {
+                icon: '◆',
+                label: 'mem',
+                value: `${Math.round(this.systemInfo.memory.heapUsed / 1024 / 1024)}M`,
+                detail: `/${Math.round(this.systemInfo.memory.rss / 1024 / 1024)}M`,
+                className: 'activity'
+            }
+        ];
+
+        if (this.systemStatsFooter) {
+            this.systemStatsFooter.innerHTML = stats.map(stat => `
+                <div class="system-stat-card ${stat.className}">
+                    <span class="stat-label">${stat.label}:</span>
+                    <span class="stat-value">${stat.value}</span><span class="stat-detail">${stat.detail}</span>
+                </div>
+            `).join('  |  ');
+        }
+    }
+
+    // Enhanced activity feed rendering
+    renderActivityFeed() {
+        if (!this.activityFeed || this.activityFeed.length === 0) {
+            this.activityFeedList.innerHTML = '<div class="empty-state">No recent activity.</div>';
+            return;
+        }
+
+        this.activityFeedList.innerHTML = this.activityFeed.slice(0, 10).map(activity => {
+            const timeAgo = this.getTimeAgo(new Date(activity.timestamp));
+            const statusClass = `activity-status status-${activity.status}`;
+            
+            return `
+                <div class="activity-feed-item">
+                    <div class="activity-icon">🎤</div>
+                    <div class="activity-content">
+                        <div class="activity-header">
+                            <div class="activity-session">${activity.sessionName || 'Unknown Session'}</div>
+                            <div class="activity-time">${timeAgo}</div>
+                        </div>
+                        <div class="activity-text">${activity.content}</div>
+                        <div class="activity-meta">
+                            <span class="activity-type">${activity.type.replace('_', ' ')}</span>
+                            <span class="${statusClass}">${activity.status.toUpperCase()}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    // Helper function to get human-readable time ago
+    getTimeAgo(date) {
+        const now = new Date();
+        const diffInSeconds = Math.floor((now - date) / 1000);
+        
+        if (diffInSeconds < 60) return `${diffInSeconds}s ago`;
+        if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+        if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+        return `${Math.floor(diffInSeconds / 86400)}d ago`;
+    }
+
+    // Override loadSystemInfo to update dashboard
+    async loadSystemInfo() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/system`);
+            if (response.ok) {
+                this.systemInfo = await response.json();
+                this.renderSystemStats();
+            }
+        } catch (error) {
+            console.error('Failed to load system info:', error);
+        }
+    }
+
+    // Override loadActivityFeed to update dashboard
+    async loadActivityFeed() {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/activity?limit=20`);
+            if (response.ok) {
+                const data = await response.json();
+                this.activityFeed = data.activities;
+                this.renderActivityFeed();
+            }
+        } catch (error) {
+            console.error('Failed to load activity feed:', error);
         }
     }
 }

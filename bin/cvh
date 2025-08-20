@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Multi-instance voice hooks launcher
+# Automatically detects if primary (5111) is occupied and becomes secondary
+
+REPO="/home/whysw/Documents/mcp-voice-hooks"
+PRIMARY_PORT=5111
+FALLBACK_PORT=5112
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+log() {
+    echo -e "${GREEN}[CVH]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[CVH]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[CVH]${NC} $1" >&2
+}
+
+# Function to check if port is in use
+port_in_use() {
+    local port=$1
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntp 2>/dev/null | grep -q ":${port}\b"
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -ln 2>/dev/null | grep -q ":${port}\b"
+    else
+        # Fallback: try to connect
+        timeout 1 bash -c "exec 6<>/dev/tcp/127.0.0.1/${port}" 2>/dev/null
+    fi
+}
+
+# Build if necessary
+ensure_built() {
+    if [[ ! -f "${REPO}/dist/unified-server.js" ]]; then
+        log "Building project..."
+        cd "$REPO"
+        if [[ ! -f package-lock.json ]]; then
+            npm install
+        fi
+        npm run build
+        log "Build complete"
+    fi
+}
+
+# Role detection and environment setup
+setup_environment() {
+    if port_in_use "$PRIMARY_PORT"; then
+        log "Port $PRIMARY_PORT occupied, running as ${BLUE}SECONDARY${NC}"
+        export MCP_VOICE_HOOKS_PORT="$FALLBACK_PORT"
+        export ROLE="secondary"
+        export INSTANCE_URL="http://127.0.0.1:${FALLBACK_PORT}"
+        export PRIMARY_URL="http://127.0.0.1:${PRIMARY_PORT}"
+        export MCP_VOICE_HOOKS_DISABLE_UI="1"
+    else
+        log "Running as ${BLUE}PRIMARY${NC} on port $PRIMARY_PORT"
+        export MCP_VOICE_HOOKS_PORT="$PRIMARY_PORT"
+        export ROLE="primary"
+        export INSTANCE_URL="http://127.0.0.1:${PRIMARY_PORT}"
+        unset MCP_VOICE_HOOKS_DISABLE_UI || true
+        unset PRIMARY_URL || true
+    fi
+}
+
+# Register with Claude MCP
+register_mcp() {
+    log "Registering with Claude MCP (local scope)"
+    
+    # Remove existing registration (ignore errors)
+    claude mcp remove voice-hooks -s local >/dev/null 2>&1 || true
+    
+    # Add with current environment
+    claude mcp add voice-hooks env \
+        MCP_VOICE_HOOKS_PORT="${MCP_VOICE_HOOKS_PORT}" \
+        ROLE="${ROLE}" \
+        INSTANCE_URL="${INSTANCE_URL}" \
+        ${PRIMARY_URL:+PRIMARY_URL="${PRIMARY_URL}"} \
+        ${MCP_VOICE_HOOKS_DISABLE_UI:+MCP_VOICE_HOOKS_DISABLE_UI="${MCP_VOICE_HOOKS_DISABLE_UI}"} \
+        node "${REPO}/dist/unified-server.js" -- --mcp-managed
+}
+
+# Test connectivity to primary (if secondary)
+test_primary_connection() {
+    if [[ "$ROLE" == "secondary" ]]; then
+        log "Testing connection to primary at $PRIMARY_URL"
+        if curl -s "$PRIMARY_URL/version" >/dev/null 2>&1; then
+            log "✓ Primary connection established"
+        else
+            warn "⚠ Could not connect to primary instance"
+            warn "  Make sure primary is running first"
+        fi
+    fi
+}
+
+# Display instance information
+show_instance_info() {
+    log "Instance Configuration:"
+    echo "  Role: $ROLE"
+    echo "  Port: $MCP_VOICE_HOOKS_PORT"
+    echo "  Instance URL: $INSTANCE_URL"
+    if [[ "$ROLE" == "secondary" ]]; then
+        echo "  Primary URL: $PRIMARY_URL"
+        echo "  UI: Disabled"
+    else
+        echo "  UI: Enabled"
+        echo "  WebSocket: ws://localhost:$MCP_VOICE_HOOKS_PORT/ws"
+    fi
+}
+
+# Main execution
+main() {
+    log "Multi-instance Voice Hooks Launcher"
+    
+    # Ensure we're in the right directory and project is built
+    ensure_built
+    
+    # Detect role and setup environment
+    setup_environment
+    
+    # Show configuration
+    show_instance_info
+    
+    # Test primary connection if secondary
+    test_primary_connection
+    
+    # Register with MCP
+    register_mcp
+    
+    # Launch Claude
+    log "Launching Claude Code..."
+    exec claude "$@"
+}
+
+# Show help
+show_help() {
+    cat <<EOF
+Multi-instance Voice Hooks Launcher (cvh)
+
+USAGE:
+    cvh [CLAUDE_ARGS...]
+
+DESCRIPTION:
+    Automatically sets up primary/secondary voice hooks instances:
+    - Primary (port 5111): Full UI + WebSocket hub for voice events
+    - Secondary (port 5112+): No UI, forwards voice events to primary
+    
+    The first instance becomes primary, additional instances become secondary.
+
+EXAMPLES:
+    cvh                    # Start Claude with voice hooks (auto-detect role)
+    cvh --resume           # Resume previous session with voice hooks
+    cvh --help            # Show Claude help (after setup)
+
+PORTS:
+    Primary:   5111 (UI enabled, WebSocket hub)
+    Secondary: 5112 (UI disabled, event forwarding)
+
+EOF
+}
+
+# Handle arguments
+case "${1:-}" in
+    --help|-h)
+        show_help
+        exit 0
+        ;;
+    --version|-v)
+        echo "CVH Multi-instance Voice Hooks Launcher"
+        echo "Repository: $REPO"
+        exit 0
+        ;;
+    *)
+        main "$@"
+        ;;
+esac

@@ -1,3 +1,1 @@
-{
-  "mcpServers": {}
-}
+{"mcpServers": {"voice-hooks": {"command": "node", "args": ["/home/whysw/Documents/mcp-voice-hooks/dist/unified-server.js", "--mcp-managed"], "cwd": "/home/whysw/Documents/mcp-voice-hooks"}}}

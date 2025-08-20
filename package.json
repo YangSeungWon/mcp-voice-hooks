@@ -45,9 +45,11 @@
   "homepage": "https://github.com/johnmatthewtennant/mcp-voice-hooks#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.3",
+    "@types/ws": "^8.18.1",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "open": "^10.1.2"
+    "open": "^10.1.2",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

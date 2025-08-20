@@ -8,6 +8,8 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import http from 'http';
+import { WebSocketServer } from 'ws';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { debugLog } from './debug.ts';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -25,6 +27,12 @@ const WAIT_TIMEOUT_SECONDS = 60;
 const HTTP_PORT = process.env.MCP_VOICE_HOOKS_PORT ? parseInt(process.env.MCP_VOICE_HOOKS_PORT) : 5111;
 const AUTO_DELIVER_VOICE_INPUT = process.env.MCP_VOICE_HOOKS_AUTO_DELIVER_VOICE_INPUT !== 'false'; // Default to true (auto-deliver enabled)
 const AUTO_DELIVER_VOICE_INPUT_BEFORE_TOOLS = process.env.MCP_VOICE_HOOKS_AUTO_DELIVER_VOICE_INPUT_BEFORE_TOOLS === 'true'; // Default to false (don't auto-deliver voice input before tools. Only effective if auto-deliver is enabled)
+
+// Multi-instance support
+const INSTANCE_ROLE = process.env.ROLE || 'primary';
+const INSTANCE_URL = process.env.INSTANCE_URL || `http://127.0.0.1:${HTTP_PORT}`;
+const PRIMARY_URL = process.env.PRIMARY_URL || 'http://127.0.0.1:5111';
+const DISABLE_UI = process.env.MCP_VOICE_HOOKS_DISABLE_UI === '1';
 
 // Promisified exec for async/await
 const execAsync = promisify(exec);
@@ -110,8 +118,261 @@ let voicePreferences = {
 // HTTP Server Setup (always created)
 const app = express();
 app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.json({ limit: "2mb" }));
+
+// Session-to-instance mapping for routing ASR requests
+const sessionToInstance = new Map<string, string>();
+
+// Create HTTP server for WebSocket support
+const server = http.createServer(app);
+let wss: WebSocketServer | null = null;
+
+// Initialize WebSocket server for Primary instances
+if (INSTANCE_ROLE === 'primary') {
+  wss = new WebSocketServer({ server, path: "/ws" });
+  debugLog(`[WebSocket] Initialized WebSocket server for primary instance`);
+}
+
+// Serve static files only if UI is enabled
+if (!DISABLE_UI) {
+  app.use(express.static(path.join(__dirname, '..', 'public')));
+}
+
+// Broadcast function for WebSocket clients (Primary only)
+function broadcastAll(payload: any) {
+  if (wss && INSTANCE_ROLE === 'primary') {
+    const data = JSON.stringify(payload);
+    for (const client of wss.clients) {
+      if (client.readyState === 1) client.send(data);
+    }
+  }
+}
+
+// Function to lookup instance URL for a session
+async function lookupInstanceUrl(sessionId: string): Promise<string | null> {
+  return sessionToInstance.get(sessionId) || INSTANCE_URL; // fallback to current instance
+}
+
+// Function to register session mapping
+function registerSession(sessionId: string, instanceUrl: string) {
+  sessionToInstance.set(sessionId, instanceUrl);
+  debugLog(`[Session Mapping] Registered ${sessionId} -> ${instanceUrl}`);
+}
+
+// Primary hub endpoint for collecting speak events from all instances
+app.post('/feed/speak', (req: Request, res: Response) => {
+  if (INSTANCE_ROLE !== 'primary') {
+    res.status(403).json({ error: 'Only primary instance can accept speak events' });
+    return;
+  }
+
+  const evt = {
+    type: 'speak',
+    at: Date.now(),
+    sessionId: req.body.sessionId ?? 'unknown',
+    instanceUrl: req.body.instanceUrl ?? INSTANCE_URL,
+    text: req.body.text ?? req.body.message ?? '',
+    meta: req.body.meta ?? {},
+  };
+  
+  // Broadcast to WebSocket clients
+  broadcastAll(evt);
+  debugLog(`[Event Hub] Broadcasted speak event from session ${evt.sessionId}`);
+  
+  res.json({ ok: true });
+});
+
+// Version/health endpoint
+app.get('/version', (_req: Request, res: Response) => {
+  res.json({
+    role: INSTANCE_ROLE,
+    port: HTTP_PORT,
+    instanceUrl: INSTANCE_URL,
+    primaryUrl: INSTANCE_ROLE === 'secondary' ? PRIMARY_URL : undefined,
+    uiDisabled: DISABLE_UI,
+    pid: process.pid,
+    node: process.version
+  });
+});
+
+// Enhanced session info endpoint
+app.get('/api/sessions/:sessionId/details', async (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  const session = sessionManager.getSession(sessionId);
+  
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  try {
+    // Get Git information if in a Git repository
+    let gitInfo = null;
+    if (session.projectPath) {
+      try {
+        const { stdout: branch } = await execAsync('git branch --show-current', { cwd: session.projectPath });
+        const { stdout: commit } = await execAsync('git rev-parse --short HEAD', { cwd: session.projectPath });
+        const { stdout: status } = await execAsync('git status --porcelain', { cwd: session.projectPath });
+        
+        gitInfo = {
+          branch: branch.trim(),
+          commit: commit.trim(),
+          hasChanges: status.trim().length > 0,
+          changedFiles: status.trim().split('\n').filter(line => line.trim()).length
+        };
+      } catch {
+        // Not a git repository or git not available
+      }
+    }
+
+    res.json({
+      ...session,
+      gitInfo,
+      environment: {
+        nodeVersion: process.version,
+        platform: process.platform,
+        cwd: session.projectPath || process.cwd()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: 'Failed to get session details',
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+// Session activity timeline
+app.get('/api/sessions/:sessionId/activity', (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  const session = sessionManager.getSession(sessionId);
+  
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  // Get activity from utterances (can be extended to include tool usage, etc.)
+  const activities = session.utteranceQueue.utterances.map(utterance => ({
+    type: 'voice_input',
+    timestamp: utterance.timestamp,
+    status: utterance.status,
+    content: utterance.text,
+    id: utterance.id
+  }));
+
+  res.json({
+    sessionId,
+    activities: activities.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+  });
+});
+
+// Global activity feed (all sessions)
+app.get('/api/activity', (req: Request, res: Response) => {
+  const limit = parseInt(req.query.limit as string) || 50;
+  const allSessions = sessionManager.getAllSessions();
+  const allActivities: any[] = [];
+
+  // Collect activities from all sessions
+  allSessions.forEach(session => {
+    session.utteranceQueue.utterances.forEach(utterance => {
+      allActivities.push({
+        type: 'voice_input',
+        timestamp: utterance.timestamp,
+        status: utterance.status,
+        content: utterance.text,
+        id: utterance.id,
+        sessionId: session.id,
+        sessionName: session.projectName,
+        projectPath: session.projectPath
+      });
+    });
+  });
+
+  // Sort by timestamp and limit
+  const sortedActivities = allActivities
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .slice(0, limit);
+
+  res.json({
+    activities: sortedActivities,
+    totalSessions: allSessions.length,
+    activeSessions: allSessions.filter(s => s.isActive).length
+  });
+});
+
+// System overview endpoint
+app.get('/api/system', (req: Request, res: Response) => {
+  const sessions = sessionManager.getAllSessions();
+  const summary = sessionManager.getSessionSummary();
+  
+  res.json({
+    instance: {
+      role: INSTANCE_ROLE,
+      port: HTTP_PORT,
+      pid: process.pid,
+      uptime: process.uptime(),
+      nodeVersion: process.version,
+      platform: process.platform
+    },
+    sessions: {
+      total: sessions.length,
+      active: sessions.filter(s => s.isActive).length,
+      summary
+    },
+    voice: {
+      enabled: !DISABLE_UI,
+      activeClients: ttsClients.size
+    },
+    memory: process.memoryUsage()
+  });
+});
+
+// ASR routing endpoint (Primary only) - routes mic input to correct instance
+app.post('/ui/asr/:sessionId', async (req: Request, res: Response) => {
+  if (INSTANCE_ROLE !== 'primary') {
+    res.status(403).json({ error: 'ASR routing only available on primary instance' });
+    return;
+  }
+
+  const sessionId = req.params.sessionId;
+  const instanceUrl = await lookupInstanceUrl(sessionId);
+
+  if (!instanceUrl) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  try {
+    // Proxy the request to the appropriate instance
+    const targetUrl = `${instanceUrl}/api/sessions/${sessionId}/asr`;
+    debugLog(`[ASR Routing] Proxying ${sessionId} to ${targetUrl}`);
+    
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': req.headers['content-type'] as string || 'application/octet-stream'
+      },
+      body: req
+    });
+
+    res.status(response.status);
+    if (response.body) {
+      const reader = response.body.getReader();
+      const pump = async () => {
+        const { done, value } = await reader.read();
+        if (done) return;
+        res.write(value);
+        return pump();
+      };
+      await pump();
+    }
+    res.end();
+  } catch (error) {
+    debugLog(`[ASR Routing] Error proxying to ${instanceUrl}:`, error);
+    res.status(500).json({ error: 'Failed to route ASR request' });
+  }
+});
 
 // API Routes
 app.post('/api/potential-utterances', (req: Request, res: Response) => {
@@ -122,17 +383,43 @@ app.post('/api/potential-utterances', (req: Request, res: Response) => {
     return;
   }
 
-  // Route voice input to the active session's queue
-  const activeQueue = sessionManager.getActiveUtteranceQueue();
-  const targetQueue = activeQueue || queue; // Fallback to global queue
+  // Register/update session from request data if provided
+  let targetSession = null;
+  if (req.body.session_id || req.body.cwd || req.body.transcript_path) {
+    const sessionId = registerSessionFromRequest(req);
+    targetSession = sessionManager.getSession(sessionId);
+    
+    // Auto-activate the session if it's the only one or if no session is currently active
+    const allSessions = sessionManager.getAllSessions();
+    const activeSession = sessionManager.getActiveSession();
+    if (!activeSession || allSessions.length === 1) {
+      sessionManager.setActiveSession(sessionId);
+      targetSession = sessionManager.getSession(sessionId);
+      debugLog(`[Voice Input] Auto-activated session: ${sessionId}`);
+    }
+  }
+
+  // Route voice input to the appropriate session's queue
+  let targetQueue;
+  let routingSession;
+
+  if (targetSession) {
+    // Use the session from the request
+    targetQueue = targetSession.utteranceQueue;
+    routingSession = targetSession;
+  } else {
+    // Fallback to active session or global queue
+    const activeQueue = sessionManager.getActiveUtteranceQueue();
+    targetQueue = activeQueue || queue;
+    routingSession = sessionManager.getActiveSession();
+  }
   
   const parsedTimestamp = timestamp ? new Date(timestamp) : undefined;
   const utterance = targetQueue.add(text, parsedTimestamp);
   
   // Log which session received the voice input
-  const activeSession = sessionManager.getActiveSession();
-  if (activeSession) {
-    debugLog(`[Voice Input] Routed to session: ${activeSession.id} (${activeSession.projectName || 'unknown project'})`);
+  if (routingSession) {
+    debugLog(`[Voice Input] Routed to session: ${routingSession.id} (${routingSession.projectName || 'unknown project'})`);
   } else {
     debugLog(`[Voice Input] Routed to global queue (no active session)`);
   }
@@ -148,17 +435,42 @@ app.post('/api/potential-utterances', (req: Request, res: Response) => {
       timestamp: utterance.timestamp,
       status: utterance.status,
     },
-    sessionId: activeSession?.id || null,
-    sessionName: activeSession?.projectName || null,
+    sessionId: routingSession?.id || null,
+    sessionName: routingSession?.projectName || null,
   });
 });
 
 app.get('/api/utterances', (req: Request, res: Response) => {
   const limit = parseInt(req.query.limit as string) || 10;
-  const utterances = queue.getRecent(limit);
+  
+  // Collect utterances from all sources: active session, all sessions, and global queue
+  let allUtterances: Utterance[] = [];
+  
+  // First, get utterances from the active session
+  const activeSession = sessionManager.getActiveSession();
+  if (activeSession) {
+    allUtterances.push(...activeSession.utteranceQueue.utterances);
+  }
+  
+  // Then, get utterances from all other sessions (avoid duplicates)
+  const allSessions = sessionManager.getAllSessions();
+  allSessions.forEach(session => {
+    if (!activeSession || session.id !== activeSession.id) {
+      allUtterances.push(...session.utteranceQueue.utterances);
+    }
+  });
+  
+  // Finally, add utterances from global queue
+  allUtterances.push(...queue.utterances);
+  
+  // Remove duplicates by id and sort by timestamp
+  const uniqueUtterances = Array.from(
+    new Map(allUtterances.map(u => [u.id, u])).values()
+  ).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+   .slice(0, limit);
 
   res.json({
-    utterances: utterances.map(u => ({
+    utterances: uniqueUtterances.map(u => ({
       id: u.id,
       text: u.text,
       timestamp: u.timestamp,
@@ -189,20 +501,49 @@ function dequeueUtterancesCore() {
     };
   }
 
-  const pendingUtterances = queue.utterances
-    .filter(u => u.status === 'pending')
-    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+  // Collect pending utterances from all sources
+  let allPendingUtterances: { utterance: Utterance, source: 'global' | 'session', sessionId?: string }[] = [];
+  
+  // Get from active session first
+  const activeSession = sessionManager.getActiveSession();
+  if (activeSession) {
+    const sessionPending = activeSession.utteranceQueue.utterances.filter(u => u.status === 'pending');
+    allPendingUtterances.push(...sessionPending.map(u => ({ utterance: u, source: 'session' as const, sessionId: activeSession.id })));
+  }
+  
+  // Get from all other sessions
+  const allSessions = sessionManager.getAllSessions();
+  allSessions.forEach(session => {
+    if (!activeSession || session.id !== activeSession.id) {
+      const sessionPending = session.utteranceQueue.utterances.filter(u => u.status === 'pending');
+      allPendingUtterances.push(...sessionPending.map(u => ({ utterance: u, source: 'session' as const, sessionId: session.id })));
+    }
+  });
+  
+  // Get from global queue
+  const globalPending = queue.utterances.filter(u => u.status === 'pending');
+  allPendingUtterances.push(...globalPending.map(u => ({ utterance: u, source: 'global' as const })));
+  
+  // Sort by timestamp (newest first)
+  allPendingUtterances.sort((a, b) => b.utterance.timestamp.getTime() - a.utterance.timestamp.getTime());
 
-  // Mark as delivered
-  pendingUtterances.forEach(u => {
-    queue.markDelivered(u.id);
+  // Mark as delivered in their respective queues
+  allPendingUtterances.forEach(({ utterance, source, sessionId }) => {
+    if (source === 'global') {
+      queue.markDelivered(utterance.id);
+    } else if (source === 'session' && sessionId) {
+      const session = sessionManager.getSession(sessionId);
+      if (session) {
+        session.utteranceQueue.markDelivered(utterance.id);
+      }
+    }
   });
 
   return {
     success: true,
-    utterances: pendingUtterances.map(u => ({
-      text: u.text,
-      timestamp: u.timestamp,
+    utterances: allPendingUtterances.map(({ utterance }) => ({
+      text: utterance.text,
+      timestamp: utterance.timestamp,
     })),
   };
 }
@@ -254,9 +595,27 @@ async function waitForUtteranceCore() {
       };
     }
 
-    const pendingUtterances = queue.utterances.filter(
-      u => u.status === 'pending'
-    );
+    // Check for pending utterances from all sources
+    let allPendingUtterances: Utterance[] = [];
+    
+    // Get from active session first
+    const activeSession = sessionManager.getActiveSession();
+    if (activeSession) {
+      allPendingUtterances.push(...activeSession.utteranceQueue.utterances.filter(u => u.status === 'pending'));
+    }
+    
+    // Get from all other sessions
+    const allSessions = sessionManager.getAllSessions();
+    allSessions.forEach(session => {
+      if (!activeSession || session.id !== activeSession.id) {
+        allPendingUtterances.push(...session.utteranceQueue.utterances.filter(u => u.status === 'pending'));
+      }
+    });
+    
+    // Get from global queue
+    allPendingUtterances.push(...queue.utterances.filter(u => u.status === 'pending'));
+    
+    const pendingUtterances = allPendingUtterances;
 
     if (pendingUtterances.length > 0) {
       // Found utterances
@@ -265,9 +624,40 @@ async function waitForUtteranceCore() {
       const sortedUtterances = pendingUtterances
         .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-      // Mark utterances as delivered
-      sortedUtterances.forEach(u => {
-        queue.markDelivered(u.id);
+      // Mark utterances as delivered in their respective queues
+      sortedUtterances.forEach(utterance => {
+        // Try to find which queue this utterance belongs to and mark it there
+        let marked = false;
+        
+        // Check active session first
+        if (activeSession) {
+          const sessionUtterance = activeSession.utteranceQueue.utterances.find(u => u.id === utterance.id);
+          if (sessionUtterance) {
+            activeSession.utteranceQueue.markDelivered(utterance.id);
+            marked = true;
+          }
+        }
+        
+        // Check all other sessions
+        if (!marked) {
+          allSessions.forEach(session => {
+            if (!activeSession || session.id !== activeSession.id) {
+              const sessionUtterance = session.utteranceQueue.utterances.find(u => u.id === utterance.id);
+              if (sessionUtterance) {
+                session.utteranceQueue.markDelivered(utterance.id);
+                marked = true;
+              }
+            }
+          });
+        }
+        
+        // Check global queue
+        if (!marked) {
+          const globalUtterance = queue.utterances.find(u => u.id === utterance.id);
+          if (globalUtterance) {
+            queue.markDelivered(utterance.id);
+          }
+        }
       });
 
       notifyWaitStatus(false); // Notify wait has ended
@@ -565,34 +955,70 @@ function getContextualUtteranceQueue(req?: Request): UtteranceQueue {
 
 // Dedicated hook endpoints that return in Claude's expected format
 app.post('/api/hooks/pre-tool', (req: Request, res: Response) => {
-  registerSessionFromRequest(req);
+  const sessionId = registerSessionFromRequest(req);
+  registerSession(sessionId, INSTANCE_URL);
   const result = handleHookRequest('tool');
   res.json(result);
 });
 
 app.post('/api/hooks/stop', async (req: Request, res: Response) => {
-  registerSessionFromRequest(req);
+  const sessionId = registerSessionFromRequest(req);
+  registerSession(sessionId, INSTANCE_URL);
   const result = await handleHookRequest('stop');
   res.json(result);
 });
 
 // Pre-speak hook endpoint
-app.post('/api/hooks/pre-speak', (req: Request, res: Response) => {
-  registerSessionFromRequest(req);
+app.post('/api/hooks/pre-speak', async (req: Request, res: Response) => {
+  const sessionId = registerSessionFromRequest(req);
+  
+  // Register session mapping for ASR routing
+  registerSession(sessionId, INSTANCE_URL);
+  
+  // Generate speak event
+  const text = req.body?.text ?? req.body?.message ?? '';
+  const event = {
+    sessionId,
+    instanceUrl: INSTANCE_URL,
+    text,
+    meta: { tool: 'speak', bodyKeys: Object.keys(req.body || {}) }
+  };
+
+  try {
+    if (INSTANCE_ROLE === 'primary') {
+      // Primary instance: broadcast directly
+      broadcastAll({ type: 'speak', at: Date.now(), ...event });
+    } else {
+      // Secondary instance: forward to primary
+      await fetch(`${PRIMARY_URL}/feed/speak`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(event)
+      }).catch((error) => {
+        debugLog(`[Event Forward] Failed to forward to primary:`, error);
+      });
+    }
+  } catch (e) {
+    debugLog('[Pre-speak] Event processing error:', (e as Error).message);
+  }
+
+  // Continue with normal hook processing
   const result = handleHookRequest('speak');
   res.json(result);
 });
 
 // Pre-wait hook endpoint
 app.post('/api/hooks/pre-wait', (req: Request, res: Response) => {
-  registerSessionFromRequest(req);
+  const sessionId = registerSessionFromRequest(req);
+  registerSession(sessionId, INSTANCE_URL);
   const result = handleHookRequest('wait');
   res.json(result);
 });
 
 // Post-tool hook endpoint
 app.post('/api/hooks/post-tool', (req: Request, res: Response) => {
-  registerSessionFromRequest(req);
+  const sessionId = registerSessionFromRequest(req);
+  registerSession(sessionId, INSTANCE_URL);
   // Use the unified handler with 'post-tool' action
   const result = handleHookRequest('post-tool');
   res.json(result);
@@ -925,28 +1351,33 @@ app.post('/api/speak-system', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/', (_req: Request, res: Response) => {
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
-});
+// Only serve index.html if UI is enabled
+if (!DISABLE_UI) {
+  app.get('/', (_req: Request, res: Response) => {
+    res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+  });
+}
 
-// Start HTTP server
-app.listen(HTTP_PORT, async () => {
-  if (!IS_MCP_MANAGED) {
-    console.log(`[HTTP] Server listening on http://localhost:${HTTP_PORT}`);
-    console.log(`[Mode] Running in ${IS_MCP_MANAGED ? 'MCP-managed' : 'standalone'} mode`);
-    console.log(`[Auto-deliver] Voice input auto-delivery is ${AUTO_DELIVER_VOICE_INPUT ? 'enabled (tools hidden)' : 'disabled (tools shown)'}`);
-    console.log(`[Pre-tool Hook] Auto-deliver voice input before tools is ${AUTO_DELIVER_VOICE_INPUT_BEFORE_TOOLS ? 'enabled' : 'disabled'}`);
+// Start HTTP server with WebSocket support
+server.listen(HTTP_PORT, async () => {
+  const logFn = IS_MCP_MANAGED ? console.error : console.log;
+  
+  logFn(`[${INSTANCE_ROLE.toUpperCase()}] Server listening on http://localhost:${HTTP_PORT}`);
+  logFn(`[Mode] Running in ${IS_MCP_MANAGED ? 'MCP-managed' : 'standalone'} mode`);
+  logFn(`[Role] ${INSTANCE_ROLE} instance - UI ${DISABLE_UI ? 'disabled' : 'enabled'}`);
+  
+  if (INSTANCE_ROLE === 'secondary') {
+    logFn(`[Primary] Connected to primary at ${PRIMARY_URL}`);
   } else {
-    // In MCP mode, write to stderr to avoid interfering with protocol
-    console.error(`[HTTP] Server listening on http://localhost:${HTTP_PORT}`);
-    console.error(`[Mode] Running in MCP-managed mode`);
-    console.error(`[Auto-deliver] Voice input auto-delivery is ${AUTO_DELIVER_VOICE_INPUT ? 'enabled (tools hidden)' : 'disabled (tools shown)'}`);
-    console.error(`[Pre-tool Hook] Auto-deliver voice input before tools is ${AUTO_DELIVER_VOICE_INPUT_BEFORE_TOOLS ? 'enabled' : 'disabled'}`);
+    logFn(`[WebSocket] ${wss ? 'enabled' : 'disabled'} on /ws`);
   }
+  
+  logFn(`[Auto-deliver] Voice input auto-delivery is ${AUTO_DELIVER_VOICE_INPUT ? 'enabled (tools hidden)' : 'disabled (tools shown)'}`);
+  logFn(`[Pre-tool Hook] Auto-deliver voice input before tools is ${AUTO_DELIVER_VOICE_INPUT_BEFORE_TOOLS ? 'enabled' : 'disabled'}`);
 
-  // Auto-open browser if no frontend connects within 3 seconds
+  // Auto-open browser only for primary instances with UI enabled
   const autoOpenBrowser = process.env.MCP_VOICE_HOOKS_AUTO_OPEN_BROWSER !== 'false'; // Default to true
-  if (IS_MCP_MANAGED && autoOpenBrowser) {
+  if (IS_MCP_MANAGED && autoOpenBrowser && INSTANCE_ROLE === 'primary' && !DISABLE_UI) {
     setTimeout(async () => {
       if (ttsClients.size === 0) {
         debugLog('[Browser] No frontend connected, opening browser...');
