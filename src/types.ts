@@ -2,7 +2,7 @@ export interface Utterance {
   id: string;
   text: string;
   timestamp: Date;
-  status: 'pending' | 'delivered';
+  status: 'pending' | 'delivered' | 'responded';
 }
 
 export interface UtteranceQueue {

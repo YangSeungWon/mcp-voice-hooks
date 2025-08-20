@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Multi-instance voice hooks launcher
-# Automatically detects if primary (5111) is occupied and becomes secondary
+# Simple voice hooks launcher for single session system
 
 REPO="/home/whysw/Documents/mcp-voice-hooks"
-PRIMARY_PORT=5111
-FALLBACK_PORT=5112
+DEFAULT_PORT=5111
 
 # Colors for output
 RED='\033[0;31m'
@@ -27,19 +25,6 @@ error() {
     echo -e "${RED}[CVH]${NC} $1" >&2
 }
 
-# Function to check if port is in use
-port_in_use() {
-    local port=$1
-    if command -v ss >/dev/null 2>&1; then
-        ss -lntp 2>/dev/null | grep -q ":${port}\b"
-    elif command -v netstat >/dev/null 2>&1; then
-        netstat -ln 2>/dev/null | grep -q ":${port}\b"
-    else
-        # Fallback: try to connect
-        timeout 1 bash -c "exec 6<>/dev/tcp/127.0.0.1/${port}" 2>/dev/null
-    fi
-}
-
 # Build if necessary
 ensure_built() {
     if [[ ! -f "${REPO}/dist/unified-server.js" ]]; then
@@ -53,23 +38,10 @@ ensure_built() {
     fi
 }
 
-# Role detection and environment setup
+# Setup environment
 setup_environment() {
-    if port_in_use "$PRIMARY_PORT"; then
-        log "Port $PRIMARY_PORT occupied, running as ${BLUE}SECONDARY${NC}"
-        export MCP_VOICE_HOOKS_PORT="$FALLBACK_PORT"
-        export ROLE="secondary"
-        export INSTANCE_URL="http://127.0.0.1:${FALLBACK_PORT}"
-        export PRIMARY_URL="http://127.0.0.1:${PRIMARY_PORT}"
-        export MCP_VOICE_HOOKS_DISABLE_UI="1"
-    else
-        log "Running as ${BLUE}PRIMARY${NC} on port $PRIMARY_PORT"
-        export MCP_VOICE_HOOKS_PORT="$PRIMARY_PORT"
-        export ROLE="primary"
-        export INSTANCE_URL="http://127.0.0.1:${PRIMARY_PORT}"
-        unset MCP_VOICE_HOOKS_DISABLE_UI || true
-        unset PRIMARY_URL || true
-    fi
+    export MCP_VOICE_HOOKS_PORT="${MCP_VOICE_HOOKS_PORT:-$DEFAULT_PORT}"
+    log "Using port ${BLUE}$MCP_VOICE_HOOKS_PORT${NC}"
 }
 
 # Register with Claude MCP
@@ -82,56 +54,29 @@ register_mcp() {
     # Add with current environment
     claude mcp add voice-hooks env \
         MCP_VOICE_HOOKS_PORT="${MCP_VOICE_HOOKS_PORT}" \
-        ROLE="${ROLE}" \
-        INSTANCE_URL="${INSTANCE_URL}" \
-        ${PRIMARY_URL:+PRIMARY_URL="${PRIMARY_URL}"} \
-        ${MCP_VOICE_HOOKS_DISABLE_UI:+MCP_VOICE_HOOKS_DISABLE_UI="${MCP_VOICE_HOOKS_DISABLE_UI}"} \
         node "${REPO}/dist/unified-server.js" -- --mcp-managed
-}
-
-# Test connectivity to primary (if secondary)
-test_primary_connection() {
-    if [[ "$ROLE" == "secondary" ]]; then
-        log "Testing connection to primary at $PRIMARY_URL"
-        if curl -s "$PRIMARY_URL/version" >/dev/null 2>&1; then
-            log "✓ Primary connection established"
-        else
-            warn "⚠ Could not connect to primary instance"
-            warn "  Make sure primary is running first"
-        fi
-    fi
 }
 
 # Display instance information
 show_instance_info() {
-    log "Instance Configuration:"
-    echo "  Role: $ROLE"
+    log "Voice Hooks Configuration:"
     echo "  Port: $MCP_VOICE_HOOKS_PORT"
-    echo "  Instance URL: $INSTANCE_URL"
-    if [[ "$ROLE" == "secondary" ]]; then
-        echo "  Primary URL: $PRIMARY_URL"
-        echo "  UI: Disabled"
-    else
-        echo "  UI: Enabled"
-        echo "  WebSocket: ws://localhost:$MCP_VOICE_HOOKS_PORT/ws"
-    fi
+    echo "  UI: http://localhost:$MCP_VOICE_HOOKS_PORT"
+    echo "  Mode: Single session"
 }
 
 # Main execution
 main() {
-    log "Multi-instance Voice Hooks Launcher"
+    log "Voice Hooks Launcher (Single Session)"
     
     # Ensure we're in the right directory and project is built
     ensure_built
     
-    # Detect role and setup environment
+    # Setup environment
     setup_environment
     
     # Show configuration
     show_instance_info
-    
-    # Test primary connection if secondary
-    test_primary_connection
     
     # Register with MCP
     register_mcp
@@ -144,26 +89,23 @@ main() {
 # Show help
 show_help() {
     cat <<EOF
-Multi-instance Voice Hooks Launcher (cvh)
+Voice Hooks Launcher (cvh) - Single Session Mode
 
 USAGE:
     cvh [CLAUDE_ARGS...]
 
 DESCRIPTION:
-    Automatically sets up primary/secondary voice hooks instances:
-    - Primary (port 5111): Full UI + WebSocket hub for voice events
-    - Secondary (port 5112+): No UI, forwards voice events to primary
-    
-    The first instance becomes primary, additional instances become secondary.
+    Sets up voice hooks with a single unified session.
+    All voice input goes through one global queue.
 
 EXAMPLES:
-    cvh                    # Start Claude with voice hooks (auto-detect role)
+    cvh                    # Start Claude with voice hooks
     cvh --resume           # Resume previous session with voice hooks
     cvh --help            # Show Claude help (after setup)
 
-PORTS:
-    Primary:   5111 (UI enabled, WebSocket hub)
-    Secondary: 5112 (UI disabled, event forwarding)
+CONFIGURATION:
+    Port: Set MCP_VOICE_HOOKS_PORT environment variable (default: 5111)
+    UI:   Accessible at http://localhost:5111 (or custom port)
 
 EOF
 }
@@ -175,7 +117,7 @@ case "${1:-}" in
         exit 0
         ;;
     --version|-v)
-        echo "CVH Multi-instance Voice Hooks Launcher"
+        echo "CVH Voice Hooks Launcher - Single Session"
         echo "Repository: $REPO"
         exit 0
         ;;

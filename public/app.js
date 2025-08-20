@@ -7,9 +7,6 @@ class VoiceHooksClient {
         this.utterancesList = document.getElementById('utterancesList');
         this.infoMessage = document.getElementById('infoMessage');
         
-        // Session management elements
-        this.refreshSessionsBtn = document.getElementById('refreshSessionsBtn');
-        this.sessionsGrid = document.getElementById('sessionsGrid');
         
         // Dashboard elements
         this.systemStatsFooter = document.getElementById('systemStatsFooter');
@@ -35,11 +32,9 @@ class VoiceHooksClient {
         this.voiceFeed = [];
         this.maxFeedItems = 50;
 
-        // Session management
-        this.selectedSessionId = null;
+        // System info
         this.systemInfo = null;
         this.activityFeed = [];
-        this.voiceFeedFilter = 'all'; // 'all', 'session', or specific sessionId
 
         // Speech recognition
         this.recognition = null;
@@ -77,7 +72,6 @@ class VoiceHooksClient {
         this.setupDashboardEventListeners();
         this.setupKeyboardEventListeners();
         this.loadData();
-        this.loadSessions();
         this.loadSystemInfo();
         this.loadActivityFeed();
         this.renderSystemStats();
@@ -85,7 +79,6 @@ class VoiceHooksClient {
         // Auto-refresh every 2 seconds
         setInterval(() => {
             this.loadData();
-            this.loadSessions();
             this.loadSystemInfo();
             this.loadActivityFeed();
         }, 5000);
@@ -240,8 +233,6 @@ class VoiceHooksClient {
             });
         }
         
-        // Session management event listeners
-        if (this.refreshSessionsBtn) this.refreshSessionsBtn.addEventListener('click', () => this.loadSessions());
 
         // Language filter
         if (this.languageSelect) {
@@ -1301,213 +1292,7 @@ class VoiceHooksClient {
         }
     }
 
-    handleSessionUpdate(data) {
-        // Console log for session updates
-        console.log(`📋 [SESSION UPDATE] Received real-time update`);
-        console.log(`   📊 Total sessions: ${data.sessions.length}`);
-        console.log(`   ⚡ Active session: ${data.activeSessionId || 'None'}`);
-        console.log(`   🔍 Session data:`, JSON.stringify(data.sessions, null, 2));
-        if (data.summary) {
-            console.log(`   📈 Summary:`, data.summary);
-        }
-        
-        // Update selected session for voice feed filtering
-        const previousSelectedSessionId = this.selectedSessionId;
-        this.selectedSessionId = data.activeSessionId;
-        
-        // Update voice feed display if filter is set to 'session' and active session changed
-        if (this.voiceFeedFilter === 'session' && previousSelectedSessionId !== this.selectedSessionId) {
-            this.updateVoiceFeedDisplay();
-        }
-        
-        // Update sessions grid without triggering a new API call
-        this.renderSessions(data.sessions, data.activeSessionId);
-        this.debugLog('Real-time session update received:', data.summary);
-    }
 
-    // Session management methods
-    async loadSessions() {
-        try {
-            const response = await fetch(`${this.baseUrl}/api/sessions`);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-
-            const data = await response.json();
-            this.renderSessions(data.sessions, data.activeSessionId);
-        } catch (error) {
-            console.error('Failed to load sessions:', error);
-            this.renderSessionsError();
-        }
-    }
-
-    renderSessions(sessions, activeSessionId) {
-        console.log(`🎨 [RENDER] Rendering sessions:`, sessions);
-        console.log(`🎨 [RENDER] Active session ID:`, activeSessionId);
-        console.log(`🎨 [RENDER] Sessions grid element:`, this.sessionsGrid);
-        
-        if (!sessions || sessions.length === 0) {
-            this.sessionsGrid.innerHTML = '<div class="empty-state">No sessions detected. Start Claude Code in any project to see sessions here.</div>';
-            return;
-        }
-
-        const sessionCards = sessions.map(session => this.createSessionCard(session, activeSessionId === session.id));
-        console.log(`🎨 [RENDER] Generated session cards:`, sessionCards);
-        this.sessionsGrid.innerHTML = sessionCards.join('');
-
-        // Add event listeners to session cards
-        this.sessionsGrid.querySelectorAll('.session-card').forEach(card => {
-            const sessionId = card.dataset.sessionId;
-            card.addEventListener('click', (e) => {
-                if (!e.target.closest('.session-btn')) {
-                    this.activateSession(sessionId);
-                }
-            });
-        });
-
-        // Add event listeners to action buttons
-        this.sessionsGrid.querySelectorAll('.session-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const action = btn.dataset.action;
-                const sessionId = btn.closest('.session-card').dataset.sessionId;
-                
-                if (action === 'clear') {
-                    this.clearSessionUtterances(sessionId);
-                } else if (action === 'remove') {
-                    this.removeSession(sessionId);
-                }
-            });
-        });
-    }
-
-    renderSessionsError() {
-        this.sessionsGrid.innerHTML = '<div class="empty-state" style="color: #dc3545;">Failed to load sessions. Please check if the server is running.</div>';
-    }
-
-    createSessionCard(session, isActive) {
-        const lastActivityTime = new Date(session.lastActivity).toLocaleString();
-        const statusClass = session.isActive ? 'active' : 'inactive';
-        const projectName = session.projectName || 'Unknown Project';
-        const projectPath = session.projectPath || 'Unknown Path';
-
-        return `
-            <div class="session-card ${statusClass} ${isActive ? 'selected' : ''}" data-session-id="${session.id}">
-                <div class="session-header">
-                    <h4 class="session-title">${projectName}</h4>
-                </div>
-                <div class="session-path">${projectPath}</div>
-                <div class="session-stats">
-                    <div class="session-stat">
-                        <div class="session-stat-icon stat-pending"></div>
-                        <span>${session.pendingUtterances} pending</span>
-                    </div>
-                    <div class="session-stat">
-                        <div class="session-stat-icon stat-total"></div>
-                        <span>${session.totalUtterances} total</span>
-                    </div>
-                </div>
-                <div class="session-activity">Last activity: ${lastActivityTime}</div>
-                <div class="session-actions">
-                    <button class="session-btn" data-action="clear">Clear Utterances</button>
-                    <button class="session-btn danger" data-action="remove">Remove</button>
-                </div>
-            </div>
-        `;
-    }
-
-    async activateSession(sessionId) {
-        console.log(`🔄 [SESSION] Activating session: ${sessionId}`);
-        
-        try {
-            const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/activate`, {
-                method: 'POST'
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                console.log(`   ✅ Session activated successfully`);
-                this.debugLog(`Activated session: ${sessionId}`);
-                
-                // Update selected session for voice feed filtering
-                this.selectedSessionId = sessionId;
-                
-                // Update voice feed display if filter is set to 'session'
-                if (this.voiceFeedFilter === 'session') {
-                    this.updateVoiceFeedDisplay();
-                }
-                
-                // Reload sessions to update the UI
-                this.loadSessions();
-            } else {
-                const error = await response.json();
-                console.log(`   ❌ Failed to activate session:`, error);
-                console.error('Failed to activate session:', error);
-            }
-        } catch (error) {
-            console.log(`   ❌ Error activating session:`, error);
-            console.error('Error activating session:', error);
-        }
-    }
-
-    async clearSessionUtterances(sessionId) {
-        if (!confirm('Are you sure you want to clear all utterances for this session?')) {
-            return;
-        }
-
-        console.log(`🗑️ [SESSION] Clearing utterances for session: ${sessionId}`);
-
-        try {
-            const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}/utterances/clear`, {
-                method: 'POST'
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                console.log(`   ✅ Cleared ${data.clearedCount || 0} utterances`);
-                this.debugLog(`Cleared utterances for session: ${sessionId}`);
-                // Reload sessions and utterances to update the UI
-                this.loadSessions();
-                this.loadData();
-            } else {
-                const error = await response.json();
-                console.log(`   ❌ Failed to clear utterances:`, error);
-                console.error('Failed to clear session utterances:', error);
-            }
-        } catch (error) {
-            console.log(`   ❌ Error clearing utterances:`, error);
-            console.error('Error clearing session utterances:', error);
-        }
-    }
-
-    async removeSession(sessionId) {
-        if (!confirm('Are you sure you want to remove this session? This action cannot be undone.')) {
-            return;
-        }
-
-        console.log(`🗑️ [SESSION] Removing session: ${sessionId}`);
-
-        try {
-            const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
-                method: 'DELETE'
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                console.log(`   ✅ Session removed successfully`);
-                this.debugLog(`Removed session: ${sessionId}`);
-                // Reload sessions to update the UI
-                this.loadSessions();
-            } else {
-                const error = await response.json();
-                console.log(`   ❌ Failed to remove session:`, error);
-                console.error('Failed to remove session:', error);
-            }
-        } catch (error) {
-            console.log(`   ❌ Error removing session:`, error);
-            console.error('Error removing session:', error);
-        }
-    }
 
     // New session management methods
     async loadSystemInfo() {
