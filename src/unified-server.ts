@@ -484,8 +484,8 @@ function handleHookRequest(attemptedAction: 'tool' | 'speak' | 'wait' | 'stop' |
       };
     }
 
-    // Check if should wait for utterances (only if voice input is active)
-    if (voiceInputActive) {
+    // Always check if should wait for utterances (voice or keyboard input)
+    if (true) {
       if (AUTO_DELIVER_VOICE_INPUT) {
         // Auto-wait for utterances
         return (async () => {

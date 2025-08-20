@@ -304,14 +304,16 @@ class VoiceHooksClient {
         // Keep existing messages that are not yet persisted (like recent speak events)
         const recentMessages = this.messages.filter(msg => 
             msg.type === 'assistant' && 
-            Date.now() - new Date(msg.timestamp).getTime() < 10000 && // Keep messages from last 10 seconds
-            !msg.persisted // Only keep messages that aren't persisted yet
+            !msg.persisted // Only keep messages that aren't persisted yet, regardless of time
         );
         this.messages = [];
         
+        // Create new messages array with server data
+        const newMessages = [];
+        
         utterances.forEach(utterance => {
             // Add user message
-            this.messages.push({
+            newMessages.push({
                 type: 'user',
                 text: utterance.text,
                 timestamp: utterance.timestamp,
@@ -321,7 +323,7 @@ class VoiceHooksClient {
             
             // If there's a response, add assistant message
             if (utterance.response) {
-                this.messages.push({
+                newMessages.push({
                     type: 'assistant', 
                     text: utterance.response,
                     timestamp: utterance.timestamp,
@@ -330,10 +332,29 @@ class VoiceHooksClient {
             }
         });
 
-        // Add back recent messages that weren't persisted yet, avoiding duplicates
-        const existingTexts = new Set(this.messages.filter(m => m.type === 'assistant').map(m => m.text));
-        const uniqueRecentMessages = recentMessages.filter(msg => !existingTexts.has(msg.text));
-        this.messages.push(...uniqueRecentMessages);
+        // Check which recent messages are now persisted and mark them as such
+        const existingTexts = new Set(newMessages.filter(m => m.type === 'assistant').map(m => m.text));
+        const stillUnpersistedMessages = [];
+        
+        recentMessages.forEach(msg => {
+            if (existingTexts.has(msg.text)) {
+                // This message is now persisted on server, don't add it to unpersisted list
+                console.log('🔄 [UPDATE] Message now persisted:', msg.text.substring(0, 50));
+            } else {
+                // Still not persisted, keep it
+                stillUnpersistedMessages.push(msg);
+            }
+        });
+        
+        console.log('🔄 [UPDATE] Recent messages before filter:', recentMessages.length);
+        console.log('🔄 [UPDATE] Still unpersisted messages:', stillUnpersistedMessages.length);
+        console.log('🔄 [UPDATE] Server messages:', newMessages.length);
+        
+        // Combine all messages and sort by timestamp (oldest to newest)
+        this.messages = [...newMessages, ...stillUnpersistedMessages].sort((a, b) => {
+            return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+        });
+        console.log('🔄 [UPDATE] Final message count:', this.messages.length);
         
         this.renderChatMessages();
         
@@ -594,6 +615,8 @@ class VoiceHooksClient {
             timestamp: new Date().toISOString(),
             status: 'pending'
         });
+        // Sort messages by timestamp to maintain chronological order
+        this.messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         console.log('👤 [CHAT] Total messages:', this.messages.length);
         this.renderChatMessages();
     }
@@ -988,10 +1011,15 @@ class VoiceHooksClient {
 
             utterance.onend = () => {
                 this.debugLog('Finished speaking');
-                // Resume voice input after TTS if it was active before
-                if (this.wasListeningBeforeTTS) {
+                // Always resume voice input after TTS for continuous conversation
+                if (this.wasListeningBeforeTTS || !this.isListening) {
                     this.wasListeningBeforeTTS = false;
-                    this.startListening();
+                    // Start listening after a short delay to allow TTS to fully complete
+                    setTimeout(() => {
+                        if (!this.isListening) {
+                            this.startListening();
+                        }
+                    }, 500);
                 }
             };
 
@@ -1148,9 +1176,14 @@ class VoiceHooksClient {
         const listeningIndicatorText = this.listeningIndicator.querySelector('span');
 
         if (isWaiting) {
-            // Claude is waiting for voice input
-            listeningIndicatorText.textContent = 'Claude is paused and waiting for voice input';
-            this.debugLog('Claude is waiting for voice input');
+            // Claude is waiting for voice input - automatically start listening
+            listeningIndicatorText.textContent = 'Claude is waiting for your voice input...';
+            this.debugLog('Claude is waiting for voice input - auto-starting listening');
+            
+            // Automatically start voice recognition if not already listening
+            if (!this.isListening && this.recognition) {
+                this.startListening();
+            }
         } else {
             // Back to normal listening state
             listeningIndicatorText.textContent = 'Listening...';
@@ -1205,6 +1238,8 @@ class VoiceHooksClient {
             timestamp: new Date().toISOString(),
             persisted: false // Mark as not yet persisted to server
         });
+        // Sort messages by timestamp to maintain chronological order
+        this.messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         console.log('🤖 [CHAT] Total messages:', this.messages.length);
         this.renderChatMessages();
     }
