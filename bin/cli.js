@@ -50,12 +50,16 @@ async function main() {
 
 // Automatically configure Claude Code settings
 async function configureClaudeCodeSettings() {
-  const claudeDir = path.join(process.cwd(), '.claude');
+  // Use the directory where ./bin/cvh is located as the project root
+  const projectRoot = path.resolve(__dirname, '..');
+  const claudeDir = path.join(projectRoot, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.local.json');
   // This was used in versions <= v1.0.21.
   const oldSettingsPath = path.join(claudeDir, 'settings.json');
 
   console.log('⚙️  Configuring project Claude Code settings...');
+  console.log(`📁 Project root: ${projectRoot}`);
+  console.log(`📁 Claude directory: ${claudeDir}`);
 
   // Create .claude directory if it doesn't exist
   if (!fs.existsSync(claudeDir)) {
@@ -227,7 +231,9 @@ async function runMCPServer() {
 
 // Uninstall MCP Voice Hooks
 async function uninstall() {
-  const claudeDir = path.join(process.cwd(), '.claude');
+  // Use the directory where ./bin/cvh is located as the project root
+  const projectRoot = path.resolve(__dirname, '..');
+  const claudeDir = path.join(projectRoot, '.claude');
   const settingsLocalPath = path.join(claudeDir, 'settings.local.json');
   const settingsPath = path.join(claudeDir, 'settings.json');
 

@@ -26,6 +26,9 @@ class VoiceHooksClient {
         this.pushToTalkKey = document.getElementById('pushToTalkKey');
         this.pushToTalkStatus = document.getElementById('pushToTalkStatus');
         this.pushToTalkStatusText = document.getElementById('pushToTalkStatusText');
+        this.autoListenToggle = document.getElementById('autoListenToggle');
+        this.minSpeechLengthInput = document.getElementById('minSpeechLength');
+        this.silenceThresholdInput = document.getElementById('silenceThreshold');
         this.utteranceInput = document.getElementById('utteranceInput');
         this.sendBtn = document.getElementById('sendBtn');
 
@@ -39,6 +42,7 @@ class VoiceHooksClient {
         this.isPushToTalkEnabled = false;
         this.isPushToTalkKeyPressed = false;
         this.pushToTalkKeyCode = localStorage.getItem('pushToTalkKey') || 'Space';
+        this.autoListenEnabled = localStorage.getItem('autoListenEnabled') !== 'false'; // Default to true
         this.isSendingMessage = false; // Flag to prevent duplicate text message submissions
         this.wasListeningBeforeTTS = false; // Track listening state before TTS
         this.initializeSpeechRecognition();
@@ -95,29 +99,66 @@ class VoiceHooksClient {
         this.recognition = new SpeechRecognition();
         this.recognition.continuous = true;
         this.recognition.interimResults = true;
+        
+        // Noise reduction settings
+        this.recognition.lang = 'ko-KR'; // Set Korean for better recognition
+        this.recognition.maxAlternatives = 1; // Reduce processing overhead
+        
+        // Add silence detection variables
+        this.silenceTimer = null;
+        this.lastSpeechTime = Date.now();
+        this.minSpeechLengthChars = parseInt(localStorage.getItem('minSpeechLength')) || 2;
+        this.silenceThreshold = parseInt(localStorage.getItem('silenceThreshold')) || 1500;
 
         // Handle results
         this.recognition.onresult = (event) => {
             let interimTranscript = '';
+            this.lastSpeechTime = Date.now();
 
             for (let i = event.resultIndex; i < event.results.length; i++) {
-                const transcript = event.results[i][0].transcript;
+                const transcript = event.results[i][0].transcript.trim();
+                const confidence = event.results[i][0].confidence;
 
                 if (event.results[i].isFinal) {
-                    // User paused - send as complete utterance
-                    this.sendVoiceUtterance(transcript);
-                    // Restore placeholder text
-                    this.interimText.textContent = 'Start speaking and your words will appear here...';
-                    this.interimText.classList.remove('active');
+                    // Filter out very short or low-confidence results
+                    if (transcript.length >= this.minSpeechLengthChars && (!confidence || confidence > 0.5)) {
+                        // Clear any pending silence timer
+                        if (this.silenceTimer) {
+                            clearTimeout(this.silenceTimer);
+                            this.silenceTimer = null;
+                        }
+                        
+                        this.sendVoiceUtterance(transcript);
+                        // Restore placeholder text
+                        this.interimText.textContent = 'Start speaking and your words will appear here...';
+                        this.interimText.classList.remove('active');
+                    } else {
+                        this.debugLog('Filtered out short/low-confidence result:', transcript, confidence);
+                    }
                 } else {
-                    // Still speaking - show interim results
-                    interimTranscript += transcript;
+                    // Still speaking - show interim results only if meaningful
+                    if (transcript.length >= 1) {
+                        interimTranscript += transcript;
+                    }
                 }
             }
 
             if (interimTranscript) {
                 this.interimText.textContent = interimTranscript;
                 this.interimText.classList.add('active');
+                
+                // Reset silence timer when we have active speech
+                if (this.silenceTimer) {
+                    clearTimeout(this.silenceTimer);
+                }
+                
+                // Set silence timer to auto-stop listening after inactivity
+                this.silenceTimer = setTimeout(() => {
+                    if (this.isListening && !this.isPushToTalkMode) {
+                        this.debugLog('Auto-stopping due to silence');
+                        this.stopListening();
+                    }
+                }, this.silenceThreshold);
             }
         };
 
@@ -216,6 +257,32 @@ class VoiceHooksClient {
                 this.pushToTalkKeyCode = e.target.value;
                 localStorage.setItem('pushToTalkKey', this.pushToTalkKeyCode);
                 this.updatePushToTalkStatus(`Ready - Hold ${this.getKeyName()} to talk`);
+            });
+        }
+
+        // Auto-listen toggle
+        if (this.autoListenToggle) {
+            this.autoListenToggle.addEventListener('change', (e) => {
+                this.autoListenEnabled = e.target.checked;
+                localStorage.setItem('autoListenEnabled', this.autoListenEnabled);
+                this.debugLog('Auto-listen toggled:', this.autoListenEnabled);
+            });
+        }
+
+        // Voice sensitivity controls
+        if (this.minSpeechLengthInput) {
+            this.minSpeechLengthInput.addEventListener('change', (e) => {
+                this.minSpeechLengthChars = parseInt(e.target.value);
+                localStorage.setItem('minSpeechLength', this.minSpeechLengthChars);
+                this.debugLog('Min speech length updated:', this.minSpeechLengthChars);
+            });
+        }
+
+        if (this.silenceThresholdInput) {
+            this.silenceThresholdInput.addEventListener('change', (e) => {
+                this.silenceThreshold = parseInt(e.target.value);
+                localStorage.setItem('silenceThreshold', this.silenceThreshold);
+                this.debugLog('Silence threshold updated:', this.silenceThreshold);
             });
         }
 
@@ -1011,8 +1078,8 @@ class VoiceHooksClient {
 
             utterance.onend = () => {
                 this.debugLog('Finished speaking');
-                // Always resume voice input after TTS for continuous conversation
-                if (this.wasListeningBeforeTTS || !this.isListening) {
+                // Resume voice input after TTS if auto-listen is enabled
+                if (this.autoListenEnabled && (this.wasListeningBeforeTTS || !this.isListening)) {
                     this.wasListeningBeforeTTS = false;
                     // Start listening after a short delay to allow TTS to fully complete
                     setTimeout(() => {
@@ -1042,6 +1109,19 @@ class VoiceHooksClient {
         }
         if (this.pushToTalkKey) {
             this.pushToTalkKey.value = this.pushToTalkKeyCode;
+        }
+        
+        // Load auto-listen preference
+        if (this.autoListenToggle) {
+            this.autoListenToggle.checked = this.autoListenEnabled;
+        }
+        
+        // Load voice sensitivity preferences
+        if (this.minSpeechLengthInput) {
+            this.minSpeechLengthInput.value = this.minSpeechLengthChars;
+        }
+        if (this.silenceThresholdInput) {
+            this.silenceThresholdInput.value = this.silenceThreshold;
         }
 
         // Voice responses always enabled
@@ -1176,13 +1256,16 @@ class VoiceHooksClient {
         const listeningIndicatorText = this.listeningIndicator.querySelector('span');
 
         if (isWaiting) {
-            // Claude is waiting for voice input - automatically start listening
+            // Claude is waiting for voice input
             listeningIndicatorText.textContent = 'Claude is waiting for your voice input...';
-            this.debugLog('Claude is waiting for voice input - auto-starting listening');
+            this.debugLog('Claude is waiting for voice input');
             
-            // Automatically start voice recognition if not already listening
-            if (!this.isListening && this.recognition) {
+            // Only automatically start voice recognition if auto-listen is enabled
+            if (this.autoListenEnabled && !this.isListening && this.recognition) {
+                this.debugLog('Auto-starting listening (auto-listen enabled)');
                 this.startListening();
+            } else if (!this.autoListenEnabled) {
+                this.debugLog('Auto-listen disabled - not starting listening automatically');
             }
         } else {
             // Back to normal listening state

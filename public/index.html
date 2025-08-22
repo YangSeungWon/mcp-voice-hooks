@@ -1278,6 +1278,27 @@
                             <option value="KeyV">V key</option>
                             <option value="KeyB">B key</option>
                         </select>
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; margin-left: 16px;">
+                            <input type="checkbox" id="autoListenToggle" style="transform: scale(1.2);" checked>
+                            Auto-listen
+                        </label>
+                    </div>
+                    
+                    <!-- Voice Sensitivity Controls -->
+                    <div style="margin-top: 8px; padding: 8px; background: #161b22; border: 1px solid #30363d; border-radius: 4px;">
+                        <div style="font-size: 12px; color: #8b949e; margin-bottom: 8px;">🎛️ Voice Sensitivity</div>
+                        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                            <label style="font-size: 12px; display: flex; align-items: center; gap: 4px;">
+                                Min Length:
+                                <input type="number" id="minSpeechLength" min="1" max="10" value="2" style="width: 50px; padding: 2px 4px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; border-radius: 3px;">
+                                chars
+                            </label>
+                            <label style="font-size: 12px; display: flex; align-items: center; gap: 4px;">
+                                Silence timeout:
+                                <input type="number" id="silenceThreshold" min="500" max="5000" step="500" value="1500" style="width: 60px; padding: 2px 4px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; border-radius: 3px;">
+                                ms
+                            </label>
+                        </div>
                     </div>
                 </div>
 
